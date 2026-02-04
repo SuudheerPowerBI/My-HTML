@@ -1,0 +1,28 @@
+SELECT 
+    DC_ID, 
+    WHSE_ID, 
+    PICK_SLOT, 
+    SKU_NBR, 
+    COUNT(*) AS CNT
+FROM (
+    SELECT
+        A.DC_ID,
+        A.WHSE_ID,
+        A.LOC_ID AS PICK_SLOT,
+        A.PROD_ID AS SKU_NBR
+    FROM IPLAS A
+    JOIN ILOC B 
+        ON A.LOC_ID = B.LOC_ID 
+        AND A.DC_ID = B.DC_ID 
+        AND A.WHSE_ID = B.WHSE_ID
+    JOIN IPRDD D 
+        ON A.PROD_ID = D.PROD_ID
+        AND A.DC_ID = D.DC_ID
+        AND D.PRDD_ID = 1
+    LEFT JOIN IPROD P 
+        ON A.PROD_ID = P.PROD_ID
+        AND A.DC_ID = P.DC_ID
+    WHERE A.LCUS_ID = 'P'
+)
+GROUP BY DC_ID, WHSE_ID, PICK_SLOT, SKU_NBR
+HAVING COUNT(*) > 1
