@@ -1,0 +1,64 @@
+-- DIAGNOSTIC: Investigating Negative Opening Heights
+-- Slots: I4A633, I4A653, I4A623, I4A603, I4A613
+
+-- STEP 1: Get the raw data for these specific slots
+SELECT 
+    A.LOC_ID AS PICK_SLOT,
+    B.LEV,
+    B.Z_COORD AS Z1,
+    B.X_COORD,
+    B.Y_COORD,
+    B.STK_POS_DEP,
+    D.CSE_HGT,
+    -- Find Z2 (shelf above)
+    (SELECT MIN(C.Z_COORD)
+     FROM ILOC C
+     WHERE C.X_COORD = B.X_COORD
+       AND C.Y_COORD = B.Y_COORD
+       AND C.DC_ID = A.DC_ID
+       AND C.WHSE_ID = A.WHSE_ID
+       AND C.LEV = B.LEV + 1
+    ) AS Z2,
+    -- Calculate the gap
+    (SELECT MIN(C.Z_COORD)
+     FROM ILOC C
+     WHERE C.X_COORD = B.X_COORD
+       AND C.Y_COORD = B.Y_COORD
+       AND C.DC_ID = A.DC_ID
+       AND C.WHSE_ID = A.WHSE_ID
+       AND C.LEV = B.LEV + 1
+    ) - B.Z_COORD AS RAW_GAP,
+    -- Opening height after 6" deduction
+    (SELECT MIN(C.Z_COORD)
+     FROM ILOC C
+     WHERE C.X_COORD = B.X_COORD
+       AND C.Y_COORD = B.Y_COORD
+       AND C.DC_ID = A.DC_ID
+       AND C.WHSE_ID = A.WHSE_ID
+       AND C.LEV = B.LEV + 1
+    ) - B.Z_COORD - 6 AS OPENING_HEIGHT
+FROM IPLAS A
+JOIN ILOC B ON A.LOC_ID = B.LOC_ID
+JOIN IPRDD D ON trunc(A.prod_id) = D.PROD_ID
+            AND A.DC_ID = D.DC_ID
+            AND D.PRDD_ID = 1
+WHERE A.LOC_ID IN ('I4A633', 'I4A653', 'I4A623', 'I4A603', 'I4A613')
+ORDER BY A.LOC_ID
+
+
+-- STEP 2: Show ALL levels at the same X,Y coordinates
+-- This helps us see the full vertical stack of shelves
+SELECT 
+    'VERTICAL STACK VIEW' AS QUERY_TYPE,
+    C.LOC_ID,
+    C.LEV,
+    C.Z_COORD,
+    C.X_COORD,
+    C.Y_COORD
+FROM ILOC C
+WHERE (C.X_COORD, C.Y_COORD) IN (
+    SELECT B.X_COORD, B.Y_COORD 
+    FROM ILOC B 
+    WHERE B.LOC_ID IN ('I4A633', 'I4A653', 'I4A623', 'I4A603', 'I4A613')
+)
+ORDER BY C.X_COORD, C.Y_COORD, C.LEV
