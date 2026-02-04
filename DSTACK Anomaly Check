@@ -1,0 +1,87 @@
+-- ANOMALY CHECK 5: Summary by DC - Distribution of Issues
+-- Remove the trailing semicolon if running in SQL*Plus or TOAD
+
+WITH BASE_DATA AS (
+    SELECT
+        CASE
+            WHEN A.DC_ID = '1' THEN 'WN'
+            WHEN A.DC_ID = '2' THEN 'IN'
+            WHEN A.DC_ID = '3' THEN 'PA'
+            WHEN A.DC_ID = '4' THEN 'NJ'
+            WHEN A.DC_ID = '5' THEN 'MA'
+            WHEN A.DC_ID = '6' THEN 'TN'
+            WHEN A.DC_ID = '7' THEN 'AL'
+            WHEN A.DC_ID = '8' THEN 'SC'
+            WHEN A.DC_ID = '10' THEN 'DT'
+            WHEN A.DC_ID = '12' THEN 'OR'
+            WHEN A.DC_ID = '13' THEN 'CR'
+            WHEN A.DC_ID = '14' THEN 'UC'
+            WHEN A.DC_ID = '15' THEN 'LA'
+            WHEN A.DC_ID = '16' THEN 'BV'
+            WHEN A.DC_ID = '17' THEN 'HI'
+            WHEN A.DC_ID = '20' THEN 'YK'
+            WHEN A.DC_ID = '21' THEN 'KC'
+            WHEN A.DC_ID = '22' THEN 'JC'
+            WHEN A.DC_ID = 'EN' THEN 'EN'
+            ELSE 'Other'
+        END AS DC_NAME,
+        A.DC_ID,
+        A.WHSE_ID,
+        A.LOC_ID AS PICK_SLOT,
+        B.LEV,
+        B.Z_COORD AS Z1,
+        B.X_COORD,
+        B.Y_COORD,
+        D.CSE_HGT
+    FROM IPLAS A
+    JOIN ILOC B ON A.LOC_ID = B.LOC_ID
+    JOIN IPRDD D ON trunc(A.prod_id) = D.PROD_ID
+                AND A.DC_ID = D.DC_ID
+                AND D.PRDD_ID = 1
+    LEFT JOIN IPROD P ON trunc(A.prod_id) = P.PROD_ID
+    LEFT JOIN CMACD M ON SUBSTR(P.MAJOR_MINOR_CLASS, 1, 2) = M.CMACD_ID
+    WHERE A.LCUS_ID = 'P'
+      AND A.LOC_STOR_CSE_CAP < 100
+      AND B.LEV < 5
+      AND B.Z_COORD <= 55
+      AND A.LOC_STOR_CSE_CAP > 0
+      AND D.CSE_CUB >= 0.03
+      AND D.CSE_CUB <= 2
+      AND D.CSE_LEN * D.CSE_WID >= 24
+      AND D.CSE_HGT > 0
+      AND D.CSE_LEN > 0
+      AND D.CSE_WID > 0
+      AND B.STK_POS_DEP > 0
+      AND M.CMACD_DESC NOT IN ('FRAGRANCES','BEVERAGES','SUPPLIES')
+      AND P.MAJOR_MINOR_CLASS NOT BETWEEN 5505 and 5899
+      AND B.LDES_ID <> 'RK'
+      AND D.CSE_WGT < 30
+),
+WITH_Z2 AS (
+    SELECT
+        BD.*,
+        (SELECT MIN(C.Z_COORD)
+         FROM ILOC C
+         WHERE C.X_COORD = BD.X_COORD
+           AND C.Y_COORD = BD.Y_COORD
+           AND C.DC_ID = BD.DC_ID
+           AND C.WHSE_ID = BD.WHSE_ID
+           AND C.LEV = BD.LEV + 1
+        ) AS Z2
+    FROM BASE_DATA BD
+)
+SELECT 
+    DC_NAME,
+    COUNT(*) AS TOTAL_SLOTS,
+    SUM(CASE WHEN Z2 IS NULL THEN 1 ELSE 0 END) AS TOP_SHELF_NULL_Z2,
+    SUM(CASE WHEN Z2 IS NOT NULL AND Z2 <= Z1 THEN 1 ELSE 0 END) AS Z_COORD_ERRORS,
+    SUM(CASE WHEN Z2 IS NOT NULL AND Z2 > Z1 AND (Z2 - Z1 - 6) <= 0 THEN 1 ELSE 0 END) AS NEGATIVE_OPENING,
+    SUM(CASE WHEN Z2 IS NOT NULL AND Z2 > Z1 AND (Z2 - Z1 - 6) > 0 AND (Z2 - Z1 - 6) < CSE_HGT THEN 1 ELSE 0 END) AS OPENING_LESS_THAN_CASE,
+    SUM(CASE WHEN Z2 IS NOT NULL AND Z2 > Z1 AND (Z2 - Z1 - 6) >= CSE_HGT THEN 1 ELSE 0 END) AS VALID_FOR_STACKING,
+    ROUND(
+        SUM(CASE WHEN Z2 IS NOT NULL AND Z2 > Z1 AND (Z2 - Z1 - 6) >= CSE_HGT THEN 1 ELSE 0 END) * 100.0 / 
+        NULLIF(COUNT(*), 0), 
+    1) AS PCT_VALID
+FROM WITH_Z2
+GROUP BY DC_NAME
+ORDER BY DC_NAME
