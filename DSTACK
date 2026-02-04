@@ -1,6 +1,8 @@
 -- ============================================================
--- DOUBLE STACK OPPORTUNITY FINDER - SNOWFLAKE VERSION v5
--- Added: Replenishment savings calculations (Micah's request)
+-- DOUBLE STACK OPPORTUNITY FINDER - SNOWFLAKE VERSION v6
+-- Updated per Micah's requirements:
+-- FW: Depth check (CASES_PER_LANE × MAX_STACK_LAYERS)
+-- SF: Potential Case Cap = FLOOR(24/Max) × FLOOR(12/Med) × FLOOR(12/Min)
 -- ============================================================
 
 WITH ANNUAL_VOLUME AS (
@@ -140,7 +142,7 @@ WITH_OPENING AS (
 WITH_CALCS AS (
     SELECT
         O.*,
-        -- MAX_STACK_LAYERS
+        -- MAX_STACK_LAYERS (for FW)
         CASE
             WHEN Z2 IS NULL THEN 1
             WHEN Z2 <= Z1 THEN 1
@@ -154,18 +156,45 @@ WITH_CALCS AS (
                     1
                  )
         END AS MAX_STACK_LAYERS,
-        -- CASES_PER_LANE
-        FLOOR(STK_POS_DEP / NULLIF(GREATEST(CSE_LEN, CSE_WID), 0)) AS CASES_PER_LANE
+        
+        -- CASES_PER_LANE (for FW)
+        FLOOR(STK_POS_DEP / NULLIF(GREATEST(CSE_LEN, CSE_WID), 0)) AS CASES_PER_LANE,
+        
+        -- SF_POTENTIAL_CASECAP (Micah's formula for SF)
+        FLOOR(24 / NULLIF(GREATEST(CSE_LEN, CSE_WID, CSE_HGT), 0)) *
+        FLOOR(12 / NULLIF(
+            CASE 
+                WHEN CSE_LEN >= CSE_WID AND CSE_LEN <= CSE_HGT THEN CSE_LEN
+                WHEN CSE_LEN <= CSE_WID AND CSE_LEN >= CSE_HGT THEN CSE_LEN
+                WHEN CSE_WID >= CSE_LEN AND CSE_WID <= CSE_HGT THEN CSE_WID
+                WHEN CSE_WID <= CSE_LEN AND CSE_WID >= CSE_HGT THEN CSE_WID
+                ELSE CSE_HGT
+            END, 0)) *
+        FLOOR(12 / NULLIF(LEAST(CSE_LEN, CSE_WID, CSE_HGT), 0)) AS SF_POTENTIAL_CASECAP
+        
     FROM WITH_OPENING O
 ),
 
 WITH_CAPACITY AS (
     SELECT
         C.*,
-        -- MAX_CAPACITY (Future Case Cap)
-        CASES_PER_LANE * MAX_STACK_LAYERS AS MAX_CAPACITY,
-        -- OPPORTUNITY
-        (CASES_PER_LANE * MAX_STACK_LAYERS) - CASECAP AS OPPORTUNITY
+        -- FW_MAX_CAPACITY (depth × stack for FW locations)
+        CASES_PER_LANE * MAX_STACK_LAYERS AS FW_MAX_CAPACITY,
+        
+        -- SUGGESTED_CASECAP: Use appropriate formula based on LDES_ID
+        CASE
+            WHEN LDES_ID = 'SF' THEN SF_POTENTIAL_CASECAP
+            WHEN LDES_ID = 'FW' THEN CASES_PER_LANE * MAX_STACK_LAYERS
+            ELSE CASES_PER_LANE * MAX_STACK_LAYERS
+        END AS SUGGESTED_CASECAP,
+        
+        -- OPPORTUNITY: Use appropriate formula based on LDES_ID
+        CASE
+            WHEN LDES_ID = 'SF' THEN SF_POTENTIAL_CASECAP - CASECAP
+            WHEN LDES_ID = 'FW' THEN (CASES_PER_LANE * MAX_STACK_LAYERS) - CASECAP
+            ELSE (CASES_PER_LANE * MAX_STACK_LAYERS) - CASECAP
+        END AS OPPORTUNITY
+        
     FROM WITH_CALCS C
 )
 
@@ -189,6 +218,7 @@ SELECT
     CSE_UNIT AS CASEPACK,
     STK_POS_DEP,
     CASECAP,
+    SUGGESTED_CASECAP,
     REPLEN_LEVEL,
     ANNUAL_UNITS,
     Z1,
@@ -208,59 +238,42 @@ SELECT
     
     MAX_STACK_LAYERS,
     CASES_PER_LANE,
-    MAX_CAPACITY,
+    FW_MAX_CAPACITY,
+    SF_POTENTIAL_CASECAP,
     OPPORTUNITY,
     
     -- =====================================================
-    -- REPLENISHMENT CALCULATIONS (Micah's Request)
+    -- REPLENISHMENT CALCULATIONS
+    -- Uses SUGGESTED_CASECAP (SF or FW formula based on LDES_ID)
     -- =====================================================
     
-    -- Current Replenishments/Year = Annual Units / (Current CaseCap * CasePack - Replen Level)
+    -- Current Replenishments/Year
     CASE
         WHEN (CASECAP * CSE_UNIT - REPLEN_LEVEL) <= 0 THEN NULL
         WHEN ANNUAL_UNITS IS NULL THEN NULL
         ELSE ROUND(ANNUAL_UNITS / (CASECAP * CSE_UNIT - REPLEN_LEVEL), 2)
     END AS CURRENT_REPLEN_PER_YEAR,
     
-    -- Future Replenishments/Year = Annual Units / (Future CaseCap * CasePack - Replen Level)
+    -- Future Replenishments/Year (uses SUGGESTED_CASECAP)
     CASE
-        WHEN (MAX_CAPACITY * CSE_UNIT - REPLEN_LEVEL) <= 0 THEN NULL
+        WHEN (SUGGESTED_CASECAP * CSE_UNIT - REPLEN_LEVEL) <= 0 THEN NULL
         WHEN ANNUAL_UNITS IS NULL THEN NULL
-        ELSE ROUND(ANNUAL_UNITS / (MAX_CAPACITY * CSE_UNIT - REPLEN_LEVEL), 2)
+        ELSE ROUND(ANNUAL_UNITS / (SUGGESTED_CASECAP * CSE_UNIT - REPLEN_LEVEL), 2)
     END AS FUTURE_REPLEN_PER_YEAR,
     
-    -- Replenishments Saved/Year = Current - Future
+    -- Replenishments Saved/Year
     CASE
         WHEN (CASECAP * CSE_UNIT - REPLEN_LEVEL) <= 0 THEN NULL
-        WHEN (MAX_CAPACITY * CSE_UNIT - REPLEN_LEVEL) <= 0 THEN NULL
+        WHEN (SUGGESTED_CASECAP * CSE_UNIT - REPLEN_LEVEL) <= 0 THEN NULL
         WHEN ANNUAL_UNITS IS NULL THEN NULL
         ELSE ROUND(
             (ANNUAL_UNITS / (CASECAP * CSE_UNIT - REPLEN_LEVEL)) -
-            (ANNUAL_UNITS / (MAX_CAPACITY * CSE_UNIT - REPLEN_LEVEL)),
+            (ANNUAL_UNITS / (SUGGESTED_CASECAP * CSE_UNIT - REPLEN_LEVEL)),
         2)
     END AS REPLEN_SAVED_PER_YEAR,
     
     -- =====================================================
-    -- SF CALCULATIONS
-    -- =====================================================
-    CASE
-        WHEN LDES_ID = 'SF' THEN
-            FLOOR(24 / NULLIF(MAX_CASE_DIM, 0)) *
-            FLOOR(12 / NULLIF(MED_CASE_DIM, 0)) *
-            FLOOR(12 / NULLIF(MIN_CASE_DIM, 0))
-        ELSE NULL
-    END AS SF_POTENTIAL_CASECAP,
-    
-    CASE
-        WHEN LDES_ID = 'SF' THEN
-            (FLOOR(24 / NULLIF(MAX_CASE_DIM, 0)) *
-             FLOOR(12 / NULLIF(MED_CASE_DIM, 0)) *
-             FLOOR(12 / NULLIF(MIN_CASE_DIM, 0))) - CASECAP
-        ELSE NULL
-    END AS SF_OPPORTUNITY,
-    
-    -- =====================================================
-    -- FW CALCULATIONS
+    -- FW SPECIFIC METRICS
     -- =====================================================
     CASE
         WHEN LDES_ID = 'FW' THEN CASES_PER_LANE
@@ -272,7 +285,22 @@ SELECT
         ELSE NULL
     END AS FW_DEPTH_OPPORTUNITY,
     
+    -- =====================================================
+    -- SF SPECIFIC METRICS
+    -- =====================================================
+    CASE
+        WHEN LDES_ID = 'SF' THEN SF_POTENTIAL_CASECAP
+        ELSE NULL
+    END AS SF_POTENTIAL,
+    
+    CASE
+        WHEN LDES_ID = 'SF' THEN SF_POTENTIAL_CASECAP - CASECAP
+        ELSE NULL
+    END AS SF_OPPORTUNITY,
+    
+    -- =====================================================
     -- FLAGS
+    -- =====================================================
     CASE
         WHEN Z2 IS NULL THEN 'N'
         WHEN Z2 <= Z1 THEN 'N'
@@ -285,14 +313,15 @@ SELECT
         ELSE 'N'
     END AS DEPTH_OPP_FLAG,
     
+    -- =====================================================
     -- OPPORTUNITY_TYPE (Micah's Categories)
+    -- =====================================================
     CASE
-        WHEN LDES_ID = 'SF' AND
-            (FLOOR(24 / NULLIF(MAX_CASE_DIM, 0)) *
-             FLOOR(12 / NULLIF(MED_CASE_DIM, 0)) *
-             FLOOR(12 / NULLIF(MIN_CASE_DIM, 0))) > CASECAP
+        -- SF: Underutilized Capacity (using SF formula)
+        WHEN LDES_ID = 'SF' AND SF_POTENTIAL_CASECAP > CASECAP
         THEN 'SF - Underutilized Capacity'
         
+        -- FW: Both Depth AND Stack
         WHEN LDES_ID = 'FW' 
             AND Z2 IS NOT NULL 
             AND Z2 > Z1
@@ -300,20 +329,24 @@ SELECT
             AND CASES_PER_LANE > CASECAP
         THEN 'FW - Both Depth/Stack'
         
+        -- FW: DoubleStack only
         WHEN LDES_ID = 'FW'
             AND Z2 IS NOT NULL 
             AND Z2 > Z1
             AND MAX_STACK_LAYERS >= 2
         THEN 'FW - DoubleStack'
         
+        -- FW: Depth Underutilized only
         WHEN LDES_ID = 'FW'
             AND CASES_PER_LANE > CASECAP
         THEN 'FW - Depth Underutilized'
         
+        -- No opportunity
         ELSE 'OK'
     END AS OPPORTUNITY_TYPE
 
 FROM WITH_CAPACITY
 WHERE Z2 IS NOT NULL
   AND Z2 > Z1
+  AND OPPORTUNITY > 0  -- Only positive opportunities
 ORDER BY REPLEN_SAVED_PER_YEAR DESC NULLS LAST
