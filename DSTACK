@@ -1,0 +1,174 @@
+  WITH BASE_DATA AS (
+    SELECT
+        CASE
+            WHEN A.DC_ID = '1' THEN 'WN'
+            WHEN A.DC_ID = '2' THEN 'IN'
+            WHEN A.DC_ID = '3' THEN 'PA'
+            WHEN A.DC_ID = '4' THEN 'NJ'
+            WHEN A.DC_ID = '5' THEN 'MA'
+            WHEN A.DC_ID = '6' THEN 'TN'
+            WHEN A.DC_ID = '7' THEN 'AL'
+            WHEN A.DC_ID = '8' THEN 'SC'
+            WHEN A.DC_ID = '10' THEN 'DT'
+            WHEN A.DC_ID = '12' THEN 'OR'
+            WHEN A.DC_ID = '13' THEN 'CR'
+            WHEN A.DC_ID = '14' THEN 'UC'
+            WHEN A.DC_ID = '15' THEN 'LA'
+            WHEN A.DC_ID = '16' THEN 'BV'
+            WHEN A.DC_ID = '17' THEN 'HI'
+            WHEN A.DC_ID = '20' THEN 'YK'
+            WHEN A.DC_ID = '21' THEN 'KC'
+            WHEN A.DC_ID = '22' THEN 'JC'
+            WHEN A.DC_ID = 'EN' THEN 'EN'
+            ELSE 'Other'
+        END AS DC_NAME,
+        A.DC_ID,
+        A.WHSE_ID,
+        trunc(A.prod_id) AS SKU_NBR,
+        A.LOC_ID AS PICK_SLOT,
+        A.LOC_STOR_CSE_CAP AS CASECAP,
+        B.LEV,
+        B.Z_COORD AS Z1,
+        B.X_COORD,
+        B.Y_COORD,
+        B.STK_POS_DEP,
+        B.LDES_ID,
+        D.CSE_HGT,
+        D.CSE_LEN,
+        D.CSE_WID,
+        D.CSE_CUB,
+        D.CSE_WGT,
+        D.CSE_UNIT,
+        D.EACHES_CUB,
+        P.DESCRIPTION,
+        P.MAJOR_MINOR_CLASS,
+        M.CMACD_DESC AS CATEGORY,
+        (SELECT MAX(S.SECT_ID)
+         FROM FSELC S
+         WHERE A.DC_ID = S.DC_ID
+           AND A.WHSE_ID = S.WHSE_ID
+           AND A.LOC_ID BETWEEN S.FROM_LOC_ID AND S.TO_LOC_ID
+        ) AS SECTION
+    FROM IPLAS A
+    JOIN ILOC B ON A.LOC_ID = B.LOC_ID
+    JOIN IPRDD D ON trunc(A.prod_id) = D.PROD_ID
+                AND A.DC_ID = D.DC_ID
+                AND D.PRDD_ID = 1
+    LEFT JOIN IPROD P ON trunc(A.prod_id) = P.PROD_ID
+    LEFT JOIN CMACD M ON SUBSTR(P.MAJOR_MINOR_CLASS, 1, 2) = M.CMACD_ID
+    WHERE A.LCUS_ID = 'P'
+      AND A.LOC_STOR_CSE_CAP < 100
+      AND B.LEV < 5
+      AND B.Z_COORD <= 55
+      AND A.LOC_STOR_CSE_CAP > 0
+      AND D.CSE_CUB >= 0.03
+      AND D.CSE_CUB <= 2
+      AND D.CSE_LEN * D.CSE_WID >= 24
+      AND (D.EACHES_CUB * D.CSE_UNIT) <= 1.5 * D.CSE_CUB
+      AND D.CSE_HGT > 0
+      AND D.CSE_LEN > 0
+      AND D.CSE_WID > 0
+      AND B.STK_POS_DEP > 0
+      AND M.CMACD_DESC NOT IN ('FRAGRANCES','BEVERAGES','SUPPLIES')
+      AND P.MAJOR_MINOR_CLASS NOT BETWEEN 5505 and 5899
+      AND B.LDES_ID <> 'RK'
+      AND D.CSE_WGT < 30
+),
+WITH_Z2 AS (
+    SELECT
+        BD.*,
+        (SELECT MIN(C.Z_COORD)
+         FROM ILOC C
+         WHERE C.X_COORD = BD.X_COORD
+           AND C.Y_COORD = BD.Y_COORD
+           AND C.DC_ID = BD.DC_ID
+           AND C.WHSE_ID = BD.WHSE_ID
+           AND C.LEV = BD.LEV + 1
+        ) AS Z2
+    FROM BASE_DATA BD
+)
+SELECT
+    DC_NAME,
+    DC_ID,
+    WHSE_ID,
+    SECTION,
+    LDES_ID,
+    PICK_SLOT,
+    SKU_NBR,
+    MAJOR_MINOR_CLASS,
+    DESCRIPTION,
+    CATEGORY,
+    LEV,
+    CSE_LEN,
+    CSE_WID,
+    CSE_HGT,
+    CSE_CUB,
+    CSE_WGT,
+    CSE_UNIT AS CASEPACK,
+    STK_POS_DEP,
+    CASECAP,
+    Z1,
+    Z2,
+    CASE
+        WHEN Z2 IS NULL THEN NULL
+        ELSE Z2 - Z1 - 6
+    END AS OPENING_HEIGHT,
+    CASE
+        WHEN Z2 IS NULL THEN 'TOP SHELF - N/A'
+        WHEN Z2 <= Z1 THEN 'Z COORDINATE ERROR'
+        WHEN Z2 - Z1 - 6 < 20 THEN 'LOW CLEARANCE'
+        ELSE 'OK'
+    END AS Z_VALIDATION,
+    CASE
+        WHEN Z2 IS NULL THEN NULL
+        WHEN Z2 <= Z1 THEN NULL
+        ELSE LEAST(FLOOR((Z2 - Z1 - 6) / NULLIF(CSE_HGT, 0)), 4)
+    END AS MAX_STACK_LAYERS,
+    FLOOR(STK_POS_DEP / NULLIF(GREATEST(CSE_LEN, CSE_WID), 0)) AS CASES_PER_LANE,
+    CASE
+        WHEN Z2 IS NULL THEN NULL
+        WHEN Z2 <= Z1 THEN NULL
+        ELSE FLOOR(STK_POS_DEP / NULLIF(GREATEST(CSE_LEN, CSE_WID), 0)) *
+             LEAST(FLOOR((Z2 - Z1 - 6) / NULLIF(CSE_HGT, 0)), 4)
+    END AS MAX_CAPACITY,
+    CASE
+        WHEN Z2 IS NULL THEN NULL
+        WHEN Z2 <= Z1 THEN NULL
+        ELSE (FLOOR(STK_POS_DEP / NULLIF(GREATEST(CSE_LEN, CSE_WID), 0)) *
+              LEAST(FLOOR((Z2 - Z1 - 6) / NULLIF(CSE_HGT, 0)), 4)) - CASECAP
+    END AS OPPORTUNITY,
+    CASE
+        WHEN Z2 IS NULL THEN NULL
+        WHEN Z2 <= Z1 THEN NULL
+        ELSE ROUND(
+            ((FLOOR(STK_POS_DEP / NULLIF(GREATEST(CSE_LEN, CSE_WID), 0)) *
+              LEAST(FLOOR((Z2 - Z1 - 6) / NULLIF(CSE_HGT, 0)), 4)) - CASECAP) /
+            NULLIF(CASECAP, 0) * 100,
+        2)
+    END AS OPPORTUNITY_PCT,
+    CASE
+        WHEN Z2 IS NULL THEN 'N'
+        WHEN Z2 <= Z1 THEN 'N'
+        WHEN LEAST(FLOOR((Z2 - Z1 - 6) / NULLIF(CSE_HGT, 0)), 4) >= 2 THEN 'Y'
+        ELSE 'N'
+    END AS DOUBLE_STACK_FLAG,
+    CASE
+        WHEN FLOOR(STK_POS_DEP / NULLIF(GREATEST(CSE_LEN, CSE_WID), 0)) > CASECAP
+        THEN 'Y'
+        ELSE 'N'
+    END AS DEPTH_OPP_FLAG,
+    CASE
+        WHEN Z2 IS NULL THEN 'TOP SHELF - N/A'
+        WHEN Z2 <= Z1 THEN 'Z COORDINATE ERROR'
+        WHEN LEAST(FLOOR((Z2 - Z1 - 6) / NULLIF(CSE_HGT, 0)), 4) >= 2
+             AND CASECAP <= FLOOR(STK_POS_DEP / NULLIF(GREATEST(CSE_LEN, CSE_WID), 0))
+        THEN 'POTENTIAL TO DOUBLE-STACK'
+        WHEN LEAST(FLOOR((Z2 - Z1 - 6) / NULLIF(CSE_HGT, 0)), 4) >= 2
+             AND CASECAP > FLOOR(STK_POS_DEP / NULLIF(GREATEST(CSE_LEN, CSE_WID), 0))
+        THEN 'ALREADY DOUBLE-STACKING'
+        ELSE 'NO OPPORTUNITY'
+    END AS STATUS
+FROM WITH_Z2
+WHERE Z2 IS NOT NULL
+  AND Z2 > Z1
+ORDER BY OPPORTUNITY DESC
