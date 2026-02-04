@@ -1,36 +1,34 @@
 -- ============================================================
--- DOUBLE STACK OPPORTUNITY FINDER - SNOWFLAKE VERSION
--- Updated with Micah's Requirements
--- CMACD removed (not available in Snowflake)
+-- DOUBLE STACK OPPORTUNITY FINDER - SNOWFLAKE VERSION v3
+-- Fixed: IPROD join now includes DC_ID
 -- ============================================================
 
 WITH BASE_DATA AS (
     SELECT
         CASE
-            WHEN A.DC_ID = '1' THEN 'WN'
-            WHEN A.DC_ID = '2' THEN 'IN'
-            WHEN A.DC_ID = '3' THEN 'PA'
-            WHEN A.DC_ID = '4' THEN 'NJ'
-            WHEN A.DC_ID = '5' THEN 'MA'
-            WHEN A.DC_ID = '6' THEN 'TN'
-            WHEN A.DC_ID = '7' THEN 'AL'
-            WHEN A.DC_ID = '8' THEN 'SC'
-            WHEN A.DC_ID = '10' THEN 'DT'
-            WHEN A.DC_ID = '12' THEN 'OR'
-            WHEN A.DC_ID = '13' THEN 'CR'
-            WHEN A.DC_ID = '14' THEN 'UC'
-            WHEN A.DC_ID = '15' THEN 'LA'
-            WHEN A.DC_ID = '16' THEN 'BV'
-            WHEN A.DC_ID = '17' THEN 'HI'
-            WHEN A.DC_ID = '20' THEN 'YK'
-            WHEN A.DC_ID = '21' THEN 'KC'
-            WHEN A.DC_ID = '22' THEN 'JC'
-            WHEN A.DC_ID = 'EN' THEN 'EN'
+            WHEN A.DC_ID = 1 THEN 'WN'
+            WHEN A.DC_ID = 2 THEN 'IN'
+            WHEN A.DC_ID = 3 THEN 'PA'
+            WHEN A.DC_ID = 4 THEN 'NJ'
+            WHEN A.DC_ID = 5 THEN 'MA'
+            WHEN A.DC_ID = 6 THEN 'TN'
+            WHEN A.DC_ID = 7 THEN 'AL'
+            WHEN A.DC_ID = 8 THEN 'SC'
+            WHEN A.DC_ID = 10 THEN 'DT'
+            WHEN A.DC_ID = 12 THEN 'OR'
+            WHEN A.DC_ID = 13 THEN 'CR'
+            WHEN A.DC_ID = 14 THEN 'UC'
+            WHEN A.DC_ID = 15 THEN 'LA'
+            WHEN A.DC_ID = 16 THEN 'BV'
+            WHEN A.DC_ID = 17 THEN 'HI'
+            WHEN A.DC_ID = 20 THEN 'YK'
+            WHEN A.DC_ID = 21 THEN 'KC'
+            WHEN A.DC_ID = 22 THEN 'JC'
             ELSE 'Other'
         END AS DC_NAME,
         A.DC_ID,
         A.WHSE_ID,
-        TRUNC(A.PROD_ID) AS SKU_NBR,
+        A.PROD_ID AS SKU_NBR,
         A.LOC_ID AS PICK_SLOT,
         SUBSTR(A.LOC_ID, 1, 3) AS LOC_PREFIX,
         A.LOC_STOR_CSE_CAP AS CASECAP,
@@ -59,11 +57,17 @@ WITH BASE_DATA AS (
         END AS MED_CASE_DIM,
         LEAST(D.CSE_LEN, D.CSE_WID, D.CSE_HGT) AS MIN_CASE_DIM
     FROM IPLAS A
-    JOIN ILOC B ON A.LOC_ID = B.LOC_ID AND A.DC_ID = B.DC_ID AND A.WHSE_ID = B.WHSE_ID
-    JOIN IPRDD D ON TRUNC(A.PROD_ID) = D.PROD_ID
-                AND A.DC_ID = D.DC_ID
-                AND D.PRDD_ID = 1
-    LEFT JOIN IPROD P ON TRUNC(A.PROD_ID) = P.PROD_ID
+    JOIN ILOC B 
+        ON A.LOC_ID = B.LOC_ID 
+        AND A.DC_ID = B.DC_ID 
+        AND A.WHSE_ID = B.WHSE_ID
+    JOIN IPRDD D 
+        ON A.PROD_ID = D.PROD_ID
+        AND A.DC_ID = D.DC_ID
+        AND D.PRDD_ID = 1
+    LEFT JOIN IPROD P 
+        ON A.PROD_ID = P.PROD_ID
+        AND A.DC_ID = P.DC_ID
     WHERE A.LCUS_ID = 'P'
       AND A.LOC_STOR_CSE_CAP < 100
       AND B.LEV < 5
