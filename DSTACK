@@ -1,4 +1,8 @@
-  WITH BASE_DATA AS (
+-- FIXED VERSION: Z2 matches on LOC_ID prefix (first 3 chars) to stay within same rack
+-- Bug: Different racks (I4A vs I2A) shared same X,Y coordinates
+-- Fix: Added SUBSTR(LOC_ID, 1, 3) matching
+
+WITH BASE_DATA AS (
     SELECT
         CASE
             WHEN A.DC_ID = '1' THEN 'WN'
@@ -26,6 +30,7 @@
         A.WHSE_ID,
         trunc(A.prod_id) AS SKU_NBR,
         A.LOC_ID AS PICK_SLOT,
+        SUBSTR(A.LOC_ID, 1, 3) AS LOC_PREFIX,
         A.LOC_STOR_CSE_CAP AS CASECAP,
         B.LEV,
         B.Z_COORD AS Z1,
@@ -77,6 +82,7 @@
 WITH_Z2 AS (
     SELECT
         BD.*,
+        -- FIXED: Added LOC_ID prefix matching to stay within same rack
         (SELECT MIN(C.Z_COORD)
          FROM ILOC C
          WHERE C.X_COORD = BD.X_COORD
@@ -84,6 +90,7 @@ WITH_Z2 AS (
            AND C.DC_ID = BD.DC_ID
            AND C.WHSE_ID = BD.WHSE_ID
            AND C.LEV = BD.LEV + 1
+           AND SUBSTR(C.LOC_ID, 1, 3) = BD.LOC_PREFIX  -- KEY FIX: Same rack
         ) AS Z2
     FROM BASE_DATA BD
 )
@@ -94,6 +101,7 @@ SELECT
     SECTION,
     LDES_ID,
     PICK_SLOT,
+    LOC_PREFIX,
     SKU_NBR,
     MAJOR_MINOR_CLASS,
     DESCRIPTION,
