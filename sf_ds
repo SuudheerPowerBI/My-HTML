@@ -1,0 +1,311 @@
+-- ============================================================
+-- DOUBLE STACK OPPORTUNITY FINDER - SNOWFLAKE VERSION
+-- Updated with Micah's Requirements
+-- ============================================================
+-- Changes:
+-- 1. Snowflake syntax (all DCs in one table)
+-- 2. OPENING_HEIGHT buffer: FW=6, SF=2
+-- 3. MAX_STACK_LAYERS: GREATEST(..., 1) - minimum of 1
+-- 4. New OPPORTUNITY_TYPE categories
+-- ============================================================
+
+WITH BASE_DATA AS (
+    SELECT
+        CASE
+            WHEN A.DC_ID = '1' THEN 'WN'
+            WHEN A.DC_ID = '2' THEN 'IN'
+            WHEN A.DC_ID = '3' THEN 'PA'
+            WHEN A.DC_ID = '4' THEN 'NJ'
+            WHEN A.DC_ID = '5' THEN 'MA'
+            WHEN A.DC_ID = '6' THEN 'TN'
+            WHEN A.DC_ID = '7' THEN 'AL'
+            WHEN A.DC_ID = '8' THEN 'SC'
+            WHEN A.DC_ID = '10' THEN 'DT'
+            WHEN A.DC_ID = '12' THEN 'OR'
+            WHEN A.DC_ID = '13' THEN 'CR'
+            WHEN A.DC_ID = '14' THEN 'UC'
+            WHEN A.DC_ID = '15' THEN 'LA'
+            WHEN A.DC_ID = '16' THEN 'BV'
+            WHEN A.DC_ID = '17' THEN 'HI'
+            WHEN A.DC_ID = '20' THEN 'YK'
+            WHEN A.DC_ID = '21' THEN 'KC'
+            WHEN A.DC_ID = '22' THEN 'JC'
+            WHEN A.DC_ID = 'EN' THEN 'EN'
+            ELSE 'Other'
+        END AS DC_NAME,
+        A.DC_ID,
+        A.WHSE_ID,
+        TRUNC(A.PROD_ID) AS SKU_NBR,
+        A.LOC_ID AS PICK_SLOT,
+        SUBSTR(A.LOC_ID, 1, 3) AS LOC_PREFIX,
+        A.LOC_STOR_CSE_CAP AS CASECAP,
+        B.LEV,
+        B.Z_COORD AS Z1,
+        B.X_COORD,
+        B.Y_COORD,
+        B.STK_POS_DEP,
+        B.LDES_ID,
+        D.CSE_HGT,
+        D.CSE_LEN,
+        D.CSE_WID,
+        D.CSE_CUB,
+        D.CSE_WGT,
+        D.CSE_UNIT,
+        D.EACHES_CUB,
+        P.DESCRIPTION,
+        P.MAJOR_MINOR_CLASS,
+        M.CMACD_DESC AS CATEGORY,
+        -- Case dimensions for SF calculation
+        GREATEST(D.CSE_LEN, D.CSE_WID, D.CSE_HGT) AS MAX_CASE_DIM,
+        -- Median = middle value of 3
+        CASE 
+            WHEN D.CSE_LEN >= D.CSE_WID AND D.CSE_LEN <= D.CSE_HGT THEN D.CSE_LEN
+            WHEN D.CSE_LEN <= D.CSE_WID AND D.CSE_LEN >= D.CSE_HGT THEN D.CSE_LEN
+            WHEN D.CSE_WID >= D.CSE_LEN AND D.CSE_WID <= D.CSE_HGT THEN D.CSE_WID
+            WHEN D.CSE_WID <= D.CSE_LEN AND D.CSE_WID >= D.CSE_HGT THEN D.CSE_WID
+            ELSE D.CSE_HGT
+        END AS MED_CASE_DIM,
+        LEAST(D.CSE_LEN, D.CSE_WID, D.CSE_HGT) AS MIN_CASE_DIM
+    FROM IPLAS A
+    JOIN ILOC B ON A.LOC_ID = B.LOC_ID AND A.DC_ID = B.DC_ID AND A.WHSE_ID = B.WHSE_ID
+    JOIN IPRDD D ON TRUNC(A.PROD_ID) = D.PROD_ID
+                AND A.DC_ID = D.DC_ID
+                AND D.PRDD_ID = 1
+    LEFT JOIN IPROD P ON TRUNC(A.PROD_ID) = P.PROD_ID
+    LEFT JOIN CMACD M ON SUBSTR(P.MAJOR_MINOR_CLASS, 1, 2) = M.CMACD_ID
+    WHERE A.LCUS_ID = 'P'
+      AND A.LOC_STOR_CSE_CAP < 100
+      AND B.LEV < 5
+      AND B.Z_COORD <= 55
+      AND A.LOC_STOR_CSE_CAP > 0
+      AND D.CSE_CUB >= 0.03
+      AND D.CSE_CUB <= 2
+      AND D.CSE_LEN * D.CSE_WID >= 24
+      AND (D.EACHES_CUB * D.CSE_UNIT) <= 1.5 * D.CSE_CUB
+      AND D.CSE_HGT > 0
+      AND D.CSE_LEN > 0
+      AND D.CSE_WID > 0
+      AND B.STK_POS_DEP > 0
+      AND M.CMACD_DESC NOT IN ('FRAGRANCES','BEVERAGES','SUPPLIES')
+      AND P.MAJOR_MINOR_CLASS NOT BETWEEN 5505 AND 5899
+      AND B.LDES_ID <> 'RK'
+      AND D.CSE_WGT < 30
+),
+
+WITH_Z2 AS (
+    SELECT
+        BD.*,
+        -- Z2: Find shelf above within same rack (LOC_PREFIX match)
+        (SELECT MIN(C.Z_COORD)
+         FROM ILOC C
+         WHERE C.X_COORD = BD.X_COORD
+           AND C.Y_COORD = BD.Y_COORD
+           AND C.DC_ID = BD.DC_ID
+           AND C.WHSE_ID = BD.WHSE_ID
+           AND C.LEV = BD.LEV + 1
+           AND SUBSTR(C.LOC_ID, 1, 3) = BD.LOC_PREFIX
+        ) AS Z2
+    FROM BASE_DATA BD
+),
+
+WITH_OPENING AS (
+    SELECT
+        W.*,
+        -- OPENING_HEIGHT: FW = 6" buffer, SF = 2" buffer
+        CASE
+            WHEN Z2 IS NULL THEN NULL
+            WHEN Z2 <= Z1 THEN NULL
+            WHEN LDES_ID = 'FW' THEN Z2 - Z1 - 6
+            WHEN LDES_ID = 'SF' THEN Z2 - Z1 - 2
+            ELSE Z2 - Z1 - 6  -- Default to 6
+        END AS OPENING_HEIGHT
+    FROM WITH_Z2 W
+)
+
+SELECT
+    DC_NAME,
+    DC_ID,
+    WHSE_ID,
+    LDES_ID,
+    PICK_SLOT,
+    LOC_PREFIX,
+    SKU_NBR,
+    MAJOR_MINOR_CLASS,
+    DESCRIPTION,
+    CATEGORY,
+    LEV,
+    CSE_LEN,
+    CSE_WID,
+    CSE_HGT,
+    CSE_CUB,
+    CSE_WGT,
+    CSE_UNIT AS CASEPACK,
+    STK_POS_DEP,
+    CASECAP,
+    Z1,
+    Z2,
+    OPENING_HEIGHT,
+    
+    -- Case Dimensions for SF calc
+    MAX_CASE_DIM,
+    MED_CASE_DIM,
+    MIN_CASE_DIM,
+    
+    -- =====================================================
+    -- Z VALIDATION
+    -- =====================================================
+    CASE
+        WHEN Z2 IS NULL THEN 'TOP SHELF - N/A'
+        WHEN Z2 <= Z1 THEN 'Z COORDINATE ERROR'
+        WHEN OPENING_HEIGHT < 20 THEN 'LOW CLEARANCE'
+        ELSE 'OK'
+    END AS Z_VALIDATION,
+    
+    -- =====================================================
+    -- MAX_STACK_LAYERS: Minimum of 1 using GREATEST
+    -- =====================================================
+    CASE
+        WHEN Z2 IS NULL THEN 1
+        WHEN Z2 <= Z1 THEN 1
+        WHEN OPENING_HEIGHT IS NULL THEN 1
+        WHEN CSE_HGT = 0 THEN 1
+        ELSE GREATEST(
+                LEAST(
+                    FLOOR(OPENING_HEIGHT / CSE_HGT),
+                    4  -- Cap at 4
+                ),
+                1  -- Minimum of 1
+             )
+    END AS MAX_STACK_LAYERS,
+    
+    -- =====================================================
+    -- CASES_PER_LANE (Depth Calculation)
+    -- =====================================================
+    FLOOR(STK_POS_DEP / NULLIF(GREATEST(CSE_LEN, CSE_WID), 0)) AS CASES_PER_LANE,
+    
+    -- =====================================================
+    -- MAX_CAPACITY
+    -- =====================================================
+    CASE
+        WHEN Z2 IS NULL THEN FLOOR(STK_POS_DEP / NULLIF(GREATEST(CSE_LEN, CSE_WID), 0)) * 1
+        WHEN Z2 <= Z1 THEN FLOOR(STK_POS_DEP / NULLIF(GREATEST(CSE_LEN, CSE_WID), 0)) * 1
+        ELSE FLOOR(STK_POS_DEP / NULLIF(GREATEST(CSE_LEN, CSE_WID), 0)) *
+             GREATEST(
+                LEAST(
+                    FLOOR(OPENING_HEIGHT / NULLIF(CSE_HGT, 0)),
+                    4
+                ),
+                1
+             )
+    END AS MAX_CAPACITY,
+    
+    -- =====================================================
+    -- OPPORTUNITY (MAX_CAPACITY - CASECAP)
+    -- =====================================================
+    CASE
+        WHEN Z2 IS NULL THEN (FLOOR(STK_POS_DEP / NULLIF(GREATEST(CSE_LEN, CSE_WID), 0)) * 1) - CASECAP
+        WHEN Z2 <= Z1 THEN (FLOOR(STK_POS_DEP / NULLIF(GREATEST(CSE_LEN, CSE_WID), 0)) * 1) - CASECAP
+        ELSE (FLOOR(STK_POS_DEP / NULLIF(GREATEST(CSE_LEN, CSE_WID), 0)) *
+              GREATEST(
+                 LEAST(
+                     FLOOR(OPENING_HEIGHT / NULLIF(CSE_HGT, 0)),
+                     4
+                 ),
+                 1
+              )) - CASECAP
+    END AS OPPORTUNITY,
+    
+    -- =====================================================
+    -- SF LOCATIONS: Potential Case Cap (Micah's Formula)
+    -- =====================================================
+    CASE
+        WHEN LDES_ID = 'SF' THEN
+            FLOOR(24 / NULLIF(MAX_CASE_DIM, 0)) *
+            FLOOR(12 / NULLIF(MED_CASE_DIM, 0)) *
+            FLOOR(12 / NULLIF(MIN_CASE_DIM, 0))
+        ELSE NULL
+    END AS SF_POTENTIAL_CASECAP,
+    
+    -- SF Opportunity Amount
+    CASE
+        WHEN LDES_ID = 'SF' THEN
+            (FLOOR(24 / NULLIF(MAX_CASE_DIM, 0)) *
+             FLOOR(12 / NULLIF(MED_CASE_DIM, 0)) *
+             FLOOR(12 / NULLIF(MIN_CASE_DIM, 0))) - CASECAP
+        ELSE NULL
+    END AS SF_OPPORTUNITY,
+    
+    -- =====================================================
+    -- FW LOCATIONS: Depth Calculation
+    -- =====================================================
+    CASE
+        WHEN LDES_ID = 'FW' THEN FLOOR(STK_POS_DEP / NULLIF(GREATEST(CSE_LEN, CSE_WID), 0))
+        ELSE NULL
+    END AS FW_POTENTIAL_DEPTH,
+    
+    -- FW Depth Opportunity Amount
+    CASE
+        WHEN LDES_ID = 'FW' THEN
+            FLOOR(STK_POS_DEP / NULLIF(GREATEST(CSE_LEN, CSE_WID), 0)) - CASECAP
+        ELSE NULL
+    END AS FW_DEPTH_OPPORTUNITY,
+    
+    -- =====================================================
+    -- DOUBLE STACK FLAG (2+ layers possible)
+    -- =====================================================
+    CASE
+        WHEN Z2 IS NULL THEN 'N'
+        WHEN Z2 <= Z1 THEN 'N'
+        WHEN GREATEST(LEAST(FLOOR(OPENING_HEIGHT / NULLIF(CSE_HGT, 0)), 4), 1) >= 2 THEN 'Y'
+        ELSE 'N'
+    END AS DOUBLE_STACK_FLAG,
+    
+    -- =====================================================
+    -- DEPTH OPPORTUNITY FLAG
+    -- =====================================================
+    CASE
+        WHEN FLOOR(STK_POS_DEP / NULLIF(GREATEST(CSE_LEN, CSE_WID), 0)) > CASECAP THEN 'Y'
+        ELSE 'N'
+    END AS DEPTH_OPP_FLAG,
+    
+    -- =====================================================
+    -- OPPORTUNITY_TYPE (Micah's Categories)
+    -- OK, FW-DoubleStack, FW-Depth Underutilized, 
+    -- FW-Both Depth/Stack, SF-Underutilized Capacity
+    -- =====================================================
+    CASE
+        -- SF Location: Underutilized Capacity
+        WHEN LDES_ID = 'SF' AND
+            (FLOOR(24 / NULLIF(MAX_CASE_DIM, 0)) *
+             FLOOR(12 / NULLIF(MED_CASE_DIM, 0)) *
+             FLOOR(12 / NULLIF(MIN_CASE_DIM, 0))) > CASECAP
+        THEN 'SF - Underutilized Capacity'
+        
+        -- FW Location: Both Depth AND Stack opportunity
+        WHEN LDES_ID = 'FW' 
+            AND Z2 IS NOT NULL 
+            AND Z2 > Z1
+            AND GREATEST(LEAST(FLOOR(OPENING_HEIGHT / NULLIF(CSE_HGT, 0)), 4), 1) >= 2
+            AND FLOOR(STK_POS_DEP / NULLIF(GREATEST(CSE_LEN, CSE_WID), 0)) > CASECAP
+        THEN 'FW - Both Depth/Stack'
+        
+        -- FW Location: DoubleStack only
+        WHEN LDES_ID = 'FW'
+            AND Z2 IS NOT NULL 
+            AND Z2 > Z1
+            AND GREATEST(LEAST(FLOOR(OPENING_HEIGHT / NULLIF(CSE_HGT, 0)), 4), 1) >= 2
+        THEN 'FW - DoubleStack'
+        
+        -- FW Location: Depth Underutilized only
+        WHEN LDES_ID = 'FW'
+            AND FLOOR(STK_POS_DEP / NULLIF(GREATEST(CSE_LEN, CSE_WID), 0)) > CASECAP
+        THEN 'FW - Depth Underutilized'
+        
+        -- No opportunity
+        ELSE 'OK'
+    END AS OPPORTUNITY_TYPE
+
+FROM WITH_OPENING
+WHERE Z2 IS NOT NULL
+  AND Z2 > Z1
+ORDER BY OPPORTUNITY DESC;
