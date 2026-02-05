@@ -1,8 +1,15 @@
 -- ============================================================
--- DOUBLE STACK OPPORTUNITY FINDER - SNOWFLAKE VERSION v6
--- Updated per Micah's requirements:
--- FW: Depth check (CASES_PER_LANE × MAX_STACK_LAYERS)
--- SF: Potential Case Cap = FLOOR(24/Max) × FLOOR(12/Med) × FLOOR(12/Min)
+-- DOUBLE STACK OPPORTUNITY FINDER - SNOWFLAKE VERSION v7
+-- Schema: CORE_FSSC.CURATED_LOGISTICS
+-- Updates:
+--   1. Full schema on all tables
+--   2. Markouts (OUT_QTY, Future Markouts, Markouts Saved)
+--   3. Filter out AL (7), JC (22)
+--   4. Level 5 only excluded from double stack (not SF/FW depth)
+--   5. LOW CLEARANCE threshold < 6
+--   6. FLOOR on replen columns
+--   7. SF product count per shelf (dynamic facing width)
+--   8. JCFN_ID filter on ASELD
 -- ============================================================
 
 WITH ANNUAL_VOLUME AS (
@@ -10,10 +17,32 @@ WITH ANNUAL_VOLUME AS (
         DC_ID, 
         WHSE_ID, 
         PROD_ID, 
-        SUM(PROD_QTY) AS ANNUAL_UNITS
-    FROM ASELD
+        SUM(PROD_QTY) AS ANNUAL_UNITS,
+        SUM(CASE WHEN ACT_PICK_QTY IS NOT NULL THEN PROD_QTY - ACT_PICK_QTY END) AS OUT_QTY
+    FROM CORE_FSSC.CURATED_LOGISTICS.ASELD
     WHERE START_DTIM >= DATEADD(YEAR, -1, CURRENT_DATE)
+      AND JCFN_ID IN ('05','11')
     GROUP BY DC_ID, WHSE_ID, PROD_ID
+),
+
+-- Count products per shelf for SF facing width calculation
+SHELF_PRODUCT_COUNT AS (
+    SELECT 
+        B.DC_ID,
+        B.WHSE_ID,
+        B.X_COORD,
+        B.Y_COORD,
+        B.LEV,
+        COUNT(DISTINCT A.PROD_ID) AS PRODUCTS_ON_SHELF,
+        48.0 / COUNT(DISTINCT A.PROD_ID) AS FACING_WIDTH
+    FROM CORE_FSSC.CURATED_LOGISTICS.IPLAS A
+    JOIN CORE_FSSC.CURATED_LOGISTICS.ILOC B 
+        ON A.LOC_ID = B.LOC_ID 
+        AND A.DC_ID = B.DC_ID 
+        AND A.WHSE_ID = B.WHSE_ID
+    WHERE A.LCUS_ID = 'P'
+      AND B.LDES_ID = 'SF'
+    GROUP BY B.DC_ID, B.WHSE_ID, B.X_COORD, B.Y_COORD, B.LEV
 ),
 
 BASE_DATA AS (
@@ -25,7 +54,6 @@ BASE_DATA AS (
             WHEN A.DC_ID = 4 THEN 'NJ'
             WHEN A.DC_ID = 5 THEN 'MA'
             WHEN A.DC_ID = 6 THEN 'TN'
-            WHEN A.DC_ID = 7 THEN 'AL'
             WHEN A.DC_ID = 8 THEN 'SC'
             WHEN A.DC_ID = 10 THEN 'DT'
             WHEN A.DC_ID = 12 THEN 'OR'
@@ -36,7 +64,6 @@ BASE_DATA AS (
             WHEN A.DC_ID = 17 THEN 'HI'
             WHEN A.DC_ID = 20 THEN 'YK'
             WHEN A.DC_ID = 21 THEN 'KC'
-            WHEN A.DC_ID = 22 THEN 'JC'
             ELSE 'Other'
         END AS DC_NAME,
         A.DC_ID,
@@ -71,33 +98,41 @@ BASE_DATA AS (
         END AS MED_CASE_DIM,
         LEAST(D.CSE_LEN, D.CSE_WID, D.CSE_HGT) AS MIN_CASE_DIM,
         (SELECT MAX(S.SECT_ID)
-         FROM FSELC S
+         FROM CORE_FSSC.CURATED_LOGISTICS.FSELC S
          WHERE A.DC_ID = S.DC_ID
            AND A.WHSE_ID = S.WHSE_ID
            AND A.LOC_ID BETWEEN S.FROM_LOC_ID AND S.TO_LOC_ID
         ) AS SECTION,
-        V.ANNUAL_UNITS
-    FROM IPLAS A
-    JOIN ILOC B 
+        V.ANNUAL_UNITS,
+        V.OUT_QTY,
+        SPC.PRODUCTS_ON_SHELF,
+        SPC.FACING_WIDTH
+    FROM CORE_FSSC.CURATED_LOGISTICS.IPLAS A
+    JOIN CORE_FSSC.CURATED_LOGISTICS.ILOC B 
         ON A.LOC_ID = B.LOC_ID 
         AND A.DC_ID = B.DC_ID 
         AND A.WHSE_ID = B.WHSE_ID
-    JOIN IPRDD D 
+    JOIN CORE_FSSC.CURATED_LOGISTICS.IPRDD D 
         ON A.PROD_ID = D.PROD_ID
         AND A.DC_ID = D.DC_ID
         AND D.PRDD_ID = 1
-    LEFT JOIN IPROD P 
+    LEFT JOIN CORE_FSSC.CURATED_LOGISTICS.IPROD P 
         ON A.PROD_ID = P.PROD_ID
         AND A.DC_ID = P.DC_ID
     LEFT JOIN ANNUAL_VOLUME V
         ON A.DC_ID = V.DC_ID
         AND A.WHSE_ID = V.WHSE_ID
         AND A.PROD_ID = V.PROD_ID
+    LEFT JOIN SHELF_PRODUCT_COUNT SPC
+        ON B.DC_ID = SPC.DC_ID
+        AND B.WHSE_ID = SPC.WHSE_ID
+        AND B.X_COORD = SPC.X_COORD
+        AND B.Y_COORD = SPC.Y_COORD
+        AND B.LEV = SPC.LEV
     WHERE A.LCUS_ID = 'P'
       AND A.LOC_STOR_CSE_CAP < 100
-      AND B.LEV < 5
-      AND B.Z_COORD <= 55
       AND A.LOC_STOR_CSE_CAP > 0
+      AND B.Z_COORD <= 55
       AND D.CSE_CUB >= 0.03
       AND D.CSE_CUB <= 2
       AND D.CSE_LEN * D.CSE_WID >= 24
@@ -109,13 +144,15 @@ BASE_DATA AS (
       AND P.MAJOR_MINOR_CLASS NOT BETWEEN 5505 AND 5899
       AND B.LDES_ID <> 'RK'
       AND D.CSE_WGT < 30
+      AND A.DC_ID NOT IN (7, 22)  -- Exclude AL, JC
+      -- Removed: B.LEV < 5 (Level 5 only excluded from double stack)
 ),
 
 WITH_Z2 AS (
     SELECT
         BD.*,
         (SELECT MIN(C.Z_COORD)
-         FROM ILOC C
+         FROM CORE_FSSC.CURATED_LOGISTICS.ILOC C
          WHERE C.X_COORD = BD.X_COORD
            AND C.Y_COORD = BD.Y_COORD
            AND C.DC_ID = BD.DC_ID
@@ -142,8 +179,9 @@ WITH_OPENING AS (
 WITH_CALCS AS (
     SELECT
         O.*,
-        -- MAX_STACK_LAYERS (for FW)
+        -- MAX_STACK_LAYERS: Level 5 forced to 1 (no double stack)
         CASE
+            WHEN LEV >= 5 THEN 1
             WHEN Z2 IS NULL THEN 1
             WHEN Z2 <= Z1 THEN 1
             WHEN OPENING_HEIGHT IS NULL THEN 1
@@ -160,8 +198,9 @@ WITH_CALCS AS (
         -- CASES_PER_LANE (for FW)
         FLOOR(STK_POS_DEP / NULLIF(GREATEST(CSE_LEN, CSE_WID), 0)) AS CASES_PER_LANE,
         
-        -- SF_POTENTIAL_CASECAP (Micah's formula for SF)
-        FLOOR(24 / NULLIF(GREATEST(CSE_LEN, CSE_WID, CSE_HGT), 0)) *
+        -- SF_POTENTIAL_CASECAP: Uses dynamic FACING_WIDTH based on products per shelf
+        -- FACING_WIDTH = 48 / products_on_shelf (default 12 if 4 products)
+        FLOOR(COALESCE(FACING_WIDTH, 12) / NULLIF(GREATEST(CSE_LEN, CSE_WID, CSE_HGT), 0)) *
         FLOOR(12 / NULLIF(
             CASE 
                 WHEN CSE_LEN >= CSE_WID AND CSE_LEN <= CSE_HGT THEN CSE_LEN
@@ -178,17 +217,17 @@ WITH_CALCS AS (
 WITH_CAPACITY AS (
     SELECT
         C.*,
-        -- FW_MAX_CAPACITY (depth × stack for FW locations)
+        -- FW_MAX_CAPACITY
         CASES_PER_LANE * MAX_STACK_LAYERS AS FW_MAX_CAPACITY,
         
-        -- SUGGESTED_CASECAP: Use appropriate formula based on LDES_ID
+        -- SUGGESTED_CASECAP
         CASE
             WHEN LDES_ID = 'SF' THEN SF_POTENTIAL_CASECAP
             WHEN LDES_ID = 'FW' THEN CASES_PER_LANE * MAX_STACK_LAYERS
             ELSE CASES_PER_LANE * MAX_STACK_LAYERS
         END AS SUGGESTED_CASECAP,
         
-        -- OPPORTUNITY: Use appropriate formula based on LDES_ID
+        -- OPPORTUNITY
         CASE
             WHEN LDES_ID = 'SF' THEN SF_POTENTIAL_CASECAP - CASECAP
             WHEN LDES_ID = 'FW' THEN (CASES_PER_LANE * MAX_STACK_LAYERS) - CASECAP
@@ -221,6 +260,9 @@ SELECT
     SUGGESTED_CASECAP,
     REPLEN_LEVEL,
     ANNUAL_UNITS,
+    OUT_QTY AS CURRENT_MARKOUTS,
+    PRODUCTS_ON_SHELF,
+    FACING_WIDTH,
     Z1,
     Z2,
     OPENING_HEIGHT,
@@ -228,11 +270,11 @@ SELECT
     MED_CASE_DIM,
     MIN_CASE_DIM,
     
-    -- Z VALIDATION
+    -- Z VALIDATION (threshold changed to < 6)
     CASE
         WHEN Z2 IS NULL THEN 'TOP SHELF - N/A'
         WHEN Z2 <= Z1 THEN 'Z COORDINATE ERROR'
-        WHEN OPENING_HEIGHT < 20 THEN 'LOW CLEARANCE'
+        WHEN OPENING_HEIGHT < 6 THEN 'LOW CLEARANCE'
         ELSE 'OK'
     END AS Z_VALIDATION,
     
@@ -243,22 +285,21 @@ SELECT
     OPPORTUNITY,
     
     -- =====================================================
-    -- REPLENISHMENT CALCULATIONS
-    -- Uses SUGGESTED_CASECAP (SF or FW formula based on LDES_ID)
+    -- REPLENISHMENT CALCULATIONS (FLOOR - no decimals)
     -- =====================================================
     
     -- Current Replenishments/Year
     CASE
         WHEN (CASECAP * CSE_UNIT - REPLEN_LEVEL) <= 0 THEN NULL
         WHEN ANNUAL_UNITS IS NULL THEN NULL
-        ELSE ROUND(ANNUAL_UNITS / (CASECAP * CSE_UNIT - REPLEN_LEVEL), 2)
+        ELSE FLOOR(ANNUAL_UNITS / (CASECAP * CSE_UNIT - REPLEN_LEVEL))
     END AS CURRENT_REPLEN_PER_YEAR,
     
-    -- Future Replenishments/Year (uses SUGGESTED_CASECAP)
+    -- Future Replenishments/Year
     CASE
         WHEN (SUGGESTED_CASECAP * CSE_UNIT - REPLEN_LEVEL) <= 0 THEN NULL
         WHEN ANNUAL_UNITS IS NULL THEN NULL
-        ELSE ROUND(ANNUAL_UNITS / (SUGGESTED_CASECAP * CSE_UNIT - REPLEN_LEVEL), 2)
+        ELSE FLOOR(ANNUAL_UNITS / (SUGGESTED_CASECAP * CSE_UNIT - REPLEN_LEVEL))
     END AS FUTURE_REPLEN_PER_YEAR,
     
     -- Replenishments Saved/Year
@@ -266,11 +307,41 @@ SELECT
         WHEN (CASECAP * CSE_UNIT - REPLEN_LEVEL) <= 0 THEN NULL
         WHEN (SUGGESTED_CASECAP * CSE_UNIT - REPLEN_LEVEL) <= 0 THEN NULL
         WHEN ANNUAL_UNITS IS NULL THEN NULL
-        ELSE ROUND(
+        ELSE FLOOR(
             (ANNUAL_UNITS / (CASECAP * CSE_UNIT - REPLEN_LEVEL)) -
-            (ANNUAL_UNITS / (SUGGESTED_CASECAP * CSE_UNIT - REPLEN_LEVEL)),
-        2)
+            (ANNUAL_UNITS / (SUGGESTED_CASECAP * CSE_UNIT - REPLEN_LEVEL))
+        )
     END AS REPLEN_SAVED_PER_YEAR,
+    
+    -- =====================================================
+    -- MARKOUT CALCULATIONS
+    -- =====================================================
+    
+    -- Future Markouts = (future replen / current replen) × Current Markouts
+    CASE
+        WHEN (CASECAP * CSE_UNIT - REPLEN_LEVEL) <= 0 THEN NULL
+        WHEN (SUGGESTED_CASECAP * CSE_UNIT - REPLEN_LEVEL) <= 0 THEN NULL
+        WHEN ANNUAL_UNITS IS NULL THEN NULL
+        WHEN OUT_QTY IS NULL THEN NULL
+        ELSE FLOOR(
+            (ANNUAL_UNITS / (SUGGESTED_CASECAP * CSE_UNIT - REPLEN_LEVEL)) /
+            (ANNUAL_UNITS / (CASECAP * CSE_UNIT - REPLEN_LEVEL)) *
+            OUT_QTY
+        )
+    END AS FUTURE_MARKOUTS,
+    
+    -- Markouts Saved = Current Markouts - Future Markouts
+    CASE
+        WHEN (CASECAP * CSE_UNIT - REPLEN_LEVEL) <= 0 THEN NULL
+        WHEN (SUGGESTED_CASECAP * CSE_UNIT - REPLEN_LEVEL) <= 0 THEN NULL
+        WHEN ANNUAL_UNITS IS NULL THEN NULL
+        WHEN OUT_QTY IS NULL THEN NULL
+        ELSE OUT_QTY - FLOOR(
+            (ANNUAL_UNITS / (SUGGESTED_CASECAP * CSE_UNIT - REPLEN_LEVEL)) /
+            (ANNUAL_UNITS / (CASECAP * CSE_UNIT - REPLEN_LEVEL)) *
+            OUT_QTY
+        )
+    END AS MARKOUTS_SAVED,
     
     -- =====================================================
     -- FW SPECIFIC METRICS
@@ -317,7 +388,7 @@ SELECT
     -- OPPORTUNITY_TYPE (Micah's Categories)
     -- =====================================================
     CASE
-        -- SF: Underutilized Capacity (using SF formula)
+        -- SF: Underutilized Capacity
         WHEN LDES_ID = 'SF' AND SF_POTENTIAL_CASECAP > CASECAP
         THEN 'SF - Underutilized Capacity'
         
@@ -348,5 +419,5 @@ SELECT
 FROM WITH_CAPACITY
 WHERE Z2 IS NOT NULL
   AND Z2 > Z1
-  AND OPPORTUNITY > 0  -- Only positive opportunities
+  AND OPPORTUNITY > 0
 ORDER BY REPLEN_SAVED_PER_YEAR DESC NULLS LAST
