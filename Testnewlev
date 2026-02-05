@@ -1,0 +1,40 @@
+WITH RACK_LEVELS AS (
+    SELECT
+        DC_ID,
+        WHSE_ID,
+        LOC_ID,
+        SUBSTR(LOC_ID, 1, 3) AS LOC_PREFIX,
+        X_COORD,
+        Y_COORD,
+        Z_COORD,
+        LEV AS ORIGINAL_LEV,
+        LDES_ID,
+        ROW_NUMBER() OVER (
+            PARTITION BY DC_ID, WHSE_ID,
+                         SUBSTR(LOC_ID, 1, 3),
+                         X_COORD, Y_COORD
+            ORDER BY Z_COORD ASC
+        ) AS CALC_LEVEL
+    FROM CORE_FSSC.CURATED_LOGISTICS.ILOC
+    WHERE LDES_ID IN ('FW', 'SF')
+      AND DC_ID NOT IN (7, 22)
+)
+
+SELECT
+    DC_ID,
+    WHSE_ID,
+    LOC_ID,
+    LOC_PREFIX,
+    X_COORD,
+    Y_COORD,
+    Z_COORD,
+    ORIGINAL_LEV,
+    CALC_LEVEL,
+    LDES_ID,
+    CASE
+        WHEN ORIGINAL_LEV = CALC_LEVEL THEN 'MATCH'
+        WHEN ORIGINAL_LEV IS NULL OR ORIGINAL_LEV = 0 THEN 'LEV MISSING'
+        ELSE 'MISMATCH'
+    END AS LEV_STATUS
+FROM RACK_LEVELS
+ORDER BY DC_ID, LOC_PREFIX, X_COORD, Y_COORD, Z_COORD
