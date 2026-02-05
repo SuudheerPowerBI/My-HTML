@@ -1,50 +1,54 @@
+-- ============================================================
+-- MEASURE: DEFINITIONS
+-- Copy everything after the = sign into a Power BI measure
+-- ============================================================
+
 Definitions HTML = 
-"<style>body{font-family:Segoe UI,sans-serif;padding:12px}h2{color:#CC0000;font-size:15px;border-bottom:2px solid #CC0000;padding-bottom:6px;margin-bottom:10px}table{width:100%;border-collapse:collapse;font-size:11px}th{background:#CC0000;color:#fff;padding:6px 8px;text-align:left}td{padding:5px 8px;border-bottom:1px solid #eee}tr:nth-child(even){background:#f9f9f9}td:first-child{font-weight:700;color:#CC0000;width:200px}.g{background:#f5f5f5;font-weight:700;color:#CC0000;font-size:10px;text-transform:uppercase;letter-spacing:1px}.g td{padding:6px 8px}</style>
-<h2>DEFINITIONS & GLOSSARY</h2>
+"<style>body{font-family:Segoe UI,sans-serif;padding:12px}table{width:100%;border-collapse:collapse}th{background:#CC0000;color:#fff;padding:8px 12px;text-align:left;font-size:18px}td{padding:6px 12px;border-bottom:1px solid #eee;font-size:18px}tr:nth-child(even){background:#f9f9f9}td:first-child{font-weight:700;color:#CC0000;width:220px}.g{background:#f5f5f5;font-weight:700;color:#CC0000;font-size:20px;letter-spacing:0.5px}.g td{padding:10px 12px}</style>
 <table>
 <tr><th>Name</th><th>Definition</th></tr>
 <tr class='g'><td colspan='2'>Location & Product</td></tr>
-<tr><td>DC_NAME</td><td>Distribution Center abbreviation (WN, IN, PA, NJ, etc.)</td></tr>
-<tr><td>WHSE_ID</td><td>Warehouse identifier within a distribution center</td></tr>
+<tr><td>DC NAME</td><td>Distribution Center abbreviation (WN, IN, PA, NJ, etc.)</td></tr>
+<tr><td>WHSE ID</td><td>Warehouse identifier within a distribution center</td></tr>
 <tr><td>SECTION</td><td>Warehouse section the pick slot belongs to</td></tr>
-<tr><td>LDES_ID</td><td>Location type: FW = Flow Rack, SF = Static Shelf</td></tr>
-<tr><td>PICK_SLOT</td><td>Physical pick location ID in the warehouse</td></tr>
-<tr><td>SKU_NBR</td><td>Product identifier (SKU number)</td></tr>
+<tr><td>LDES ID</td><td>Location type: FW = Flow Rack, SF = Static Shelf</td></tr>
+<tr><td>PICK SLOT</td><td>Physical pick location ID in the warehouse</td></tr>
+<tr><td>SKU NBR</td><td>Product identifier (SKU number)</td></tr>
 <tr><td>DESCRIPTION</td><td>Product description</td></tr>
 <tr><td>LEV</td><td>Rack level (1 = ground, 2 = second, etc.)</td></tr>
-<tr><td>CSE_LEN / WID / HGT</td><td>Case length, width, height in inches</td></tr>
-<tr><td>CSE_CUB</td><td>Case cubic volume</td></tr>
-<tr><td>CSE_WGT</td><td>Case weight in pounds</td></tr>
+<tr><td>CSE LEN / WID / HGT</td><td>Case length, width, height in inches</td></tr>
+<tr><td>CSE CUB</td><td>Case cubic volume</td></tr>
+<tr><td>CSE WGT</td><td>Case weight in pounds</td></tr>
 <tr><td>CASEPACK</td><td>Number of eaches (units) per case</td></tr>
-<tr><td>STK_POS_DEP</td><td>Stock position depth of the pick slot in inches</td></tr>
+<tr><td>STK POS DEP</td><td>Stock position depth of the pick slot in inches</td></tr>
 <tr class='g'><td colspan='2'>Core Calculations</td></tr>
 <tr><td>CASECAP</td><td>Current case capacity assigned to the pick slot</td></tr>
-<tr><td>SUGGESTED_CASECAP</td><td>Calculated optimal capacity. FW: depth x stack. SF: shelf formula</td></tr>
-<tr><td>OPPORTUNITY</td><td>SUGGESTED_CASECAP minus CASECAP. Positive = room to add cases</td></tr>
-<tr><td>REPLEN_LEVEL</td><td>Replenishment trigger level in units. When inventory drops below this, a replen is triggered</td></tr>
+<tr><td>SUGGESTED CASECAP</td><td>Calculated optimal capacity. FW: depth x stack. SF: shelf formula</td></tr>
+<tr><td>OPPORTUNITY</td><td>SUGGESTED CASECAP minus CASECAP. Positive = room to add cases</td></tr>
+<tr><td>REPLEN LEVEL</td><td>Replenishment trigger level in units. When inventory drops below this, a replen is triggered</td></tr>
 <tr class='g'><td colspan='2'>Z Coordinate Calculations</td></tr>
 <tr><td>Z1</td><td>Z coordinate (height in inches) of the current pick slot level</td></tr>
 <tr><td>Z2</td><td>Z coordinate of the level directly above the pick slot</td></tr>
-<tr><td>OPENING_HEIGHT</td><td>Usable vertical space. FW: Z2 - Z1 - 6in buffer. SF: Z2 - Z1 - 2in buffer</td></tr>
-<tr><td>MAX_STACK_LAYERS</td><td>Cases that stack vertically = FLOOR(OPENING_HEIGHT / CSE_HGT). Min 1, max 4. Level 5+ = 1</td></tr>
+<tr><td>OPENING HEIGHT</td><td>Usable vertical space. FW: Z2 - Z1 - 6in buffer. SF: Z2 - Z1 - 2in buffer</td></tr>
+<tr><td>MAX STACK LAYERS</td><td>Cases that stack vertically = FLOOR(OPENING HEIGHT / CSE HGT). Min 1, max 4. Level 5+ = 1</td></tr>
 <tr class='g'><td colspan='2'>Flow Rack (FW) Calculations</td></tr>
-<tr><td>CASES_PER_LANE</td><td>FLOOR(STK_POS_DEP / longest case dimension). Cases fitting front to back in the lane</td></tr>
-<tr><td>FW SUGGESTED_CASECAP</td><td>CASES_PER_LANE x MAX_STACK_LAYERS. Total cases the slot can hold</td></tr>
+<tr><td>CASES PER LANE</td><td>FLOOR(STK POS DEP / longest case dimension). Cases fitting front to back in the lane</td></tr>
+<tr><td>FW SUGGESTED CASECAP</td><td>CASES PER LANE x MAX STACK LAYERS. Total cases the slot can hold</td></tr>
 <tr class='g'><td colspan='2'>Static Shelf (SF) Calculations</td></tr>
-<tr><td>PRODUCTS_ON_SHELF</td><td>Count of distinct products sharing the same shelf position (X, Y, Level)</td></tr>
-<tr><td>FACING_WIDTH</td><td>48 inches / products on shelf. Width allocated to each product on the shelf</td></tr>
-<tr><td>SF SUGGESTED_CASECAP</td><td>FLOOR(24 / Max Dim) x FLOOR(Facing Width / Med Dim) x FLOOR(12 / Min Dim)</td></tr>
+<tr><td>PRODUCTS ON SHELF</td><td>Count of distinct products sharing the same shelf position (X, Y, Level)</td></tr>
+<tr><td>FACING WIDTH</td><td>48 inches / products on shelf. Width allocated to each product on the shelf</td></tr>
+<tr><td>SF SUGGESTED CASECAP</td><td>FLOOR(24 / Max Dim) x FLOOR(Facing Width / Med Dim) x FLOOR(12 / Min Dim)</td></tr>
 <tr class='g'><td colspan='2'>Replenishment Calculations</td></tr>
-<tr><td>ANNUAL_UNITS</td><td>Total units picked from this slot in the past 12 months</td></tr>
-<tr><td>CURRENT_REPLEN_PER_YEAR</td><td>Annual replen trips today = ANNUAL_UNITS / (CASECAP x CASEPACK - REPLEN_LEVEL)</td></tr>
-<tr><td>FUTURE_REPLEN_PER_YEAR</td><td>Annual replen trips after optimization = ANNUAL_UNITS / (SUGGESTED x CASEPACK - REPLEN_LEVEL)</td></tr>
-<tr><td>REPLEN_SAVED_PER_YEAR</td><td>Trips eliminated = CURRENT_REPLEN - FUTURE_REPLEN. Each saved trip = labor saved</td></tr>
+<tr><td>ANNUAL UNITS</td><td>Total units picked from this slot in the past 12 months</td></tr>
+<tr><td>CURRENT REPLEN PER YEAR</td><td>Annual replen trips today = ANNUAL UNITS / (CASECAP x CASEPACK - REPLEN LEVEL)</td></tr>
+<tr><td>FUTURE REPLEN PER YEAR</td><td>Annual replen trips after optimization = ANNUAL UNITS / (SUGGESTED x CASEPACK - REPLEN LEVEL)</td></tr>
+<tr><td>REPLEN SAVED PER YEAR</td><td>Trips eliminated = CURRENT REPLEN - FUTURE REPLEN. Each saved trip = labor saved</td></tr>
 <tr class='g'><td colspan='2'>Markout Calculations</td></tr>
-<tr><td>CURRENT_MARKOUTS</td><td>Annual units marked out (damaged, expired, short) = PROD_QTY - ACT_PICK_QTY from ASELD</td></tr>
-<tr><td>FUTURE_MARKOUTS</td><td>Projected markouts after optimization = (FUTURE_REPLEN / CURRENT_REPLEN) x CURRENT_MARKOUTS</td></tr>
-<tr><td>MARKOUTS_SAVED</td><td>Units saved = CURRENT_MARKOUTS - FUTURE_MARKOUTS. Fewer replenishments = less product exposure</td></tr>
+<tr><td>CURRENT MARKOUTS</td><td>Annual units marked out (damaged, expired, short) = PROD QTY - ACT PICK QTY from ASELD</td></tr>
+<tr><td>FUTURE MARKOUTS</td><td>Projected markouts after optimization = (FUTURE REPLEN / CURRENT REPLEN) x CURRENT MARKOUTS</td></tr>
+<tr><td>MARKOUTS SAVED</td><td>Units saved = CURRENT MARKOUTS - FUTURE MARKOUTS. Fewer replenishments = less product exposure</td></tr>
 <tr class='g'><td colspan='2'>Flags</td></tr>
-<tr><td>DOUBLE_STACK_FLAG</td><td>Y if MAX_STACK_LAYERS >= 2. Vertical stacking opportunity exists</td></tr>
-<tr><td>DEPTH_OPP_FLAG</td><td>Y if CASES_PER_LANE > CASECAP for FW locations. Lane depth is underused</td></tr>
-<tr><td>OPPORTUNITY_TYPE</td><td>Category: FW-Both, FW-DoubleStack, FW-Depth, SF-Underutilized, or OK</td></tr>
+<tr><td>DOUBLE STACK FLAG</td><td>Y if MAX STACK LAYERS >= 2. Vertical stacking opportunity exists</td></tr>
+<tr><td>DEPTH OPP FLAG</td><td>Y if CASES PER LANE > CASECAP for FW locations. Lane depth is underused</td></tr>
+<tr><td>OPPORTUNITY TYPE</td><td>Category: FW-Both, FW-DoubleStack, FW-Depth, SF-Underutilized, or OK</td></tr>
 </table>"
