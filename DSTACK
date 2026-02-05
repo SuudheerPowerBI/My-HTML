@@ -346,7 +346,7 @@ SELECT
     END AS ERROR_FLAG,
     
     -- ERROR_DETAIL: Pipe-separated list of all errors on this row
-    TRIM(BOTH '|' FROM
+    TRIM(
         CASE WHEN Z2 IS NOT NULL AND Z2 < Z1
              THEN '|Z2 < Z1' ELSE '' END
      || CASE WHEN Z2 IS NOT NULL AND Z2 > Z1 AND (Z2 - Z1) < 6
@@ -361,7 +361,7 @@ SELECT
                       + (CASE WHEN CSE_HGT > 24 THEN 1 ELSE 0 END)
                       ) >= 2
              THEN '|SF 2 Dims > 24' ELSE '' END
-    ) AS ERROR_DETAIL,
+    , '|') AS ERROR_DETAIL,
 
     -- =====================================================
     -- ROW_STATUS: Single slicer for Power BI pages
