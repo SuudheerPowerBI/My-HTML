@@ -1,7 +1,19 @@
 -- ============================================================
--- DOUBLE STACK OPPORTUNITY FINDER - SNOWFLAKE VERSION v8
+-- DOUBLE STACK OPPORTUNITY FINDER - SNOWFLAKE VERSION v9
 -- Schema: CORE_FSSC.CURATED_LOGISTICS
--- Clean: One SUGGESTED_CASECAP, one OPPORTUNITY (no separate SF/FW columns)
+-- 
+-- CHANGES FROM v8:
+--   1. Removed final WHERE filters (Z2 NOT NULL, Z2>Z1, OPP>=0)
+--      so ALL rows come through — errors are now FLAG COLUMNS
+--   2. Added Micah's 4 error flags for Page 3:
+--      • ERR_Z2_LESS_THAN_Z1    (Z2 < Z1)
+--      • ERR_LOW_CLEARANCE       (Z2-Z1 < 6)
+--      • ERR_DIM_EXCEEDS_OPENING (Max case dim > opening height)
+--      • ERR_SF_TWO_DIMS_GT_24   (SF shelf with 2 dims > 24")
+--   3. Added ERROR_FLAG (Y/N) and ERROR_DETAIL for BI slicing
+--   4. Added ROW_STATUS: 'ERROR', 'OPPORTUNITY', 'NO OPPORTUNITY'
+--      so Power BI can filter pages cleanly
+--
 -- FW = CASES_PER_LANE × MAX_STACK_LAYERS
 -- SF = FLOOR(24/Max) × FLOOR(FACING_WIDTH/Med) × FLOOR(12/Min)
 -- ============================================================
@@ -272,7 +284,7 @@ SELECT
     MAX_STACK_LAYERS,
     CASES_PER_LANE,
     
-    -- Z VALIDATION
+    -- Z VALIDATION (kept for backward compatibility)
     CASE
         WHEN Z2 IS NULL THEN 'TOP SHELF - N/A'
         WHEN Z2 <= Z1 THEN 'Z COORDINATE ERROR'
@@ -280,6 +292,100 @@ SELECT
         ELSE 'OK'
     END AS Z_VALIDATION,
     
+    -- =====================================================
+    -- MICAH'S ERROR FLAGS (Page 3)
+    -- =====================================================
+    
+    -- Error 1: Z2 < Z1 (coordinate data issue)
+    CASE
+        WHEN Z2 IS NOT NULL AND Z2 < Z1 THEN 'Y'
+        ELSE 'N'
+    END AS ERR_Z2_LESS_THAN_Z1,
+    
+    -- Error 2: Z2 - Z1 < 6 (low clearance — not enough room)
+    CASE
+        WHEN Z2 IS NOT NULL AND Z2 > Z1 AND (Z2 - Z1) < 6 THEN 'Y'
+        ELSE 'N'
+    END AS ERR_LOW_CLEARANCE,
+    
+    -- Error 3: Max case dimension > opening height
+    CASE
+        WHEN Z2 IS NOT NULL AND Z2 > Z1
+             AND OPENING_HEIGHT IS NOT NULL
+             AND GREATEST(CSE_LEN, CSE_WID, CSE_HGT) > OPENING_HEIGHT
+        THEN 'Y'
+        ELSE 'N'
+    END AS ERR_DIM_EXCEEDS_OPENING,
+    
+    -- Error 4: Static shelf (SF) with 2 dims > 24"
+    CASE
+        WHEN LDES_ID = 'SF'
+             AND (
+                   (CASE WHEN CSE_LEN > 24 THEN 1 ELSE 0 END)
+                 + (CASE WHEN CSE_WID > 24 THEN 1 ELSE 0 END)
+                 + (CASE WHEN CSE_HGT > 24 THEN 1 ELSE 0 END)
+                 ) >= 2
+        THEN 'Y'
+        ELSE 'N'
+    END AS ERR_SF_TWO_DIMS_GT_24,
+    
+    -- Overall ERROR_FLAG (Y if ANY error is flagged)
+    CASE
+        WHEN (Z2 IS NOT NULL AND Z2 < Z1)
+          OR (Z2 IS NOT NULL AND Z2 > Z1 AND (Z2 - Z1) < 6)
+          OR (Z2 IS NOT NULL AND Z2 > Z1 AND OPENING_HEIGHT IS NOT NULL
+              AND GREATEST(CSE_LEN, CSE_WID, CSE_HGT) > OPENING_HEIGHT)
+          OR (LDES_ID = 'SF'
+              AND (
+                    (CASE WHEN CSE_LEN > 24 THEN 1 ELSE 0 END)
+                  + (CASE WHEN CSE_WID > 24 THEN 1 ELSE 0 END)
+                  + (CASE WHEN CSE_HGT > 24 THEN 1 ELSE 0 END)
+                  ) >= 2)
+        THEN 'Y'
+        ELSE 'N'
+    END AS ERROR_FLAG,
+    
+    -- ERROR_DETAIL: Pipe-separated list of all errors on this row
+    TRIM(BOTH '|' FROM
+        CASE WHEN Z2 IS NOT NULL AND Z2 < Z1
+             THEN '|Z2 < Z1' ELSE '' END
+     || CASE WHEN Z2 IS NOT NULL AND Z2 > Z1 AND (Z2 - Z1) < 6
+             THEN '|Low Clearance' ELSE '' END
+     || CASE WHEN Z2 IS NOT NULL AND Z2 > Z1 AND OPENING_HEIGHT IS NOT NULL
+                  AND GREATEST(CSE_LEN, CSE_WID, CSE_HGT) > OPENING_HEIGHT
+             THEN '|Dim > Opening' ELSE '' END
+     || CASE WHEN LDES_ID = 'SF'
+                  AND (
+                        (CASE WHEN CSE_LEN > 24 THEN 1 ELSE 0 END)
+                      + (CASE WHEN CSE_WID > 24 THEN 1 ELSE 0 END)
+                      + (CASE WHEN CSE_HGT > 24 THEN 1 ELSE 0 END)
+                      ) >= 2
+             THEN '|SF 2 Dims > 24' ELSE '' END
+    ) AS ERROR_DETAIL,
+
+    -- =====================================================
+    -- ROW_STATUS: Single slicer for Power BI pages
+    --   'ERROR'          → Page 3 (Errors)
+    --   'OPPORTUNITY'    → Page 2 (Front Page) & detail tables
+    --   'NO OPPORTUNITY' → Clean rows, no action needed
+    -- =====================================================
+    CASE
+        WHEN (Z2 IS NOT NULL AND Z2 < Z1)
+          OR (Z2 IS NOT NULL AND Z2 > Z1 AND (Z2 - Z1) < 6)
+          OR (Z2 IS NOT NULL AND Z2 > Z1 AND OPENING_HEIGHT IS NOT NULL
+              AND GREATEST(CSE_LEN, CSE_WID, CSE_HGT) > OPENING_HEIGHT)
+          OR (LDES_ID = 'SF'
+              AND (
+                    (CASE WHEN CSE_LEN > 24 THEN 1 ELSE 0 END)
+                  + (CASE WHEN CSE_WID > 24 THEN 1 ELSE 0 END)
+                  + (CASE WHEN CSE_HGT > 24 THEN 1 ELSE 0 END)
+                  ) >= 2)
+        THEN 'ERROR'
+        WHEN (SUGGESTED_CASECAP - CASECAP) > 0
+        THEN 'OPPORTUNITY'
+        ELSE 'NO OPPORTUNITY'
+    END AS ROW_STATUS,
+
     -- =====================================================
     -- REPLENISHMENT CALCULATIONS (FLOOR - no decimals)
     -- =====================================================
@@ -382,7 +488,11 @@ SELECT
     END AS OPPORTUNITY_TYPE
 
 FROM WITH_CAPACITY
-WHERE Z2 IS NOT NULL
-  AND Z2 > Z1
-  AND OPPORTUNITY >= 0
-ORDER BY REPLEN_SAVED_PER_YEAR DESC NULLS LAST
+
+-- =====================================================
+-- v9: NO hard filters — all rows come through
+-- Use ROW_STATUS or ERROR_FLAG in Power BI to slice pages
+-- =====================================================
+ORDER BY 
+    ERROR_FLAG DESC,                          -- Errors first
+    REPLEN_SAVED_PER_YEAR DESC NULLS LAST
