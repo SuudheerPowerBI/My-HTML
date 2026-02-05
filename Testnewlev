@@ -1,23 +1,28 @@
 WITH RACK_LEVELS AS (
     SELECT
-        DC_ID,
-        WHSE_ID,
-        LOC_ID,
-        SUBSTR(LOC_ID, 1, 3) AS LOC_PREFIX,
-        X_COORD,
-        Y_COORD,
-        Z_COORD,
-        LEV AS ORIGINAL_LEV,
-        LDES_ID,
+        B.DC_ID,
+        B.WHSE_ID,
+        B.LOC_ID,
+        SUBSTR(B.LOC_ID, 1, 3) AS LOC_PREFIX,
+        B.X_COORD,
+        B.Y_COORD,
+        B.Z_COORD,
+        B.LEV AS ORIGINAL_LEV,
+        B.LDES_ID,
         ROW_NUMBER() OVER (
-            PARTITION BY DC_ID, WHSE_ID,
-                         SUBSTR(LOC_ID, 1, 3),
-                         X_COORD, Y_COORD
-            ORDER BY Z_COORD ASC
+            PARTITION BY B.DC_ID, B.WHSE_ID,
+                         SUBSTR(B.LOC_ID, 1, 3),
+                         B.X_COORD, B.Y_COORD
+            ORDER BY B.Z_COORD ASC
         ) AS CALC_LEVEL
-    FROM CORE_FSSC.CURATED_LOGISTICS.ILOC
-    WHERE LDES_ID IN ('FW', 'SF')
-      AND DC_ID NOT IN (7, 22)
+    FROM CORE_FSSC.CURATED_LOGISTICS.ILOC B
+    JOIN CORE_FSSC.CURATED_LOGISTICS.IPLAS A
+        ON B.LOC_ID = A.LOC_ID
+        AND B.DC_ID = A.DC_ID
+        AND B.WHSE_ID = A.WHSE_ID
+    WHERE A.LCUS_ID = 'P'
+      AND B.LDES_ID IN ('FW', 'SF')
+      AND B.DC_ID NOT IN (7, 22)
 )
 
 SELECT
