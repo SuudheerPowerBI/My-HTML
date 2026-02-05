@@ -137,7 +137,7 @@ BASE_DATA AS (
       AND P.MAJOR_MINOR_CLASS NOT BETWEEN 5505 AND 5899
       AND B.LDES_ID <> 'RK'
       AND D.CSE_WGT < 30
-      AND A.DC_ID NOT IN (7, 22)
+      AND A.DC_ID NOT IN (7, 13, 22)
 ),
 
 WITH_Z2 AS (
@@ -379,71 +379,10 @@ SELECT
         
         -- No opportunity
         ELSE 'OK'
-    END AS OPPORTUNITY_TYPE,
-    
-    -- =====================================================
-    -- ERROR FLAGS (Micah's Error Checks)
-    -- =====================================================
-    
-    -- ERROR 1: Z2 < Z1
-    CASE
-        WHEN Z2 IS NOT NULL AND Z2 < Z1 THEN 'Y'
-        ELSE 'N'
-    END AS ERR_Z2_LESS_THAN_Z1,
-    
-    -- ERROR 2: Low Clearance (Z2-Z1 < 6)
-    CASE
-        WHEN Z2 IS NOT NULL AND Z2 > Z1 AND (Z2 - Z1) < 6 THEN 'Y'
-        ELSE 'N'
-    END AS ERR_LOW_CLEARANCE,
-    
-    -- ERROR 3: Max case dimension > opening height
-    CASE
-        WHEN Z2 IS NOT NULL AND Z2 > Z1 AND OPENING_HEIGHT IS NOT NULL
-            AND GREATEST(CSE_LEN, CSE_WID, CSE_HGT) > OPENING_HEIGHT
-        THEN 'Y'
-        ELSE 'N'
-    END AS ERR_CASE_EXCEEDS_OPENING,
-    
-    -- ERROR 4: SF with 2+ dimensions > 24"
-    CASE
-        WHEN LDES_ID = 'SF' AND
-            (CASE WHEN CSE_LEN > 24 THEN 1 ELSE 0 END +
-             CASE WHEN CSE_WID > 24 THEN 1 ELSE 0 END +
-             CASE WHEN CSE_HGT > 24 THEN 1 ELSE 0 END) >= 2
-        THEN 'Y'
-        ELSE 'N'
-    END AS ERR_SF_DIMS_GT_24,
-    
-    -- COMBINED ERROR FLAG
-    CASE
-        WHEN Z2 IS NOT NULL AND Z2 < Z1 THEN 'Y'
-        WHEN Z2 IS NOT NULL AND Z2 > Z1 AND (Z2 - Z1) < 6 THEN 'Y'
-        WHEN Z2 IS NOT NULL AND Z2 > Z1 AND OPENING_HEIGHT IS NOT NULL
-            AND GREATEST(CSE_LEN, CSE_WID, CSE_HGT) > OPENING_HEIGHT THEN 'Y'
-        WHEN LDES_ID = 'SF' AND
-            (CASE WHEN CSE_LEN > 24 THEN 1 ELSE 0 END +
-             CASE WHEN CSE_WID > 24 THEN 1 ELSE 0 END +
-             CASE WHEN CSE_HGT > 24 THEN 1 ELSE 0 END) >= 2 THEN 'Y'
-        ELSE 'N'
-    END AS HAS_ERROR,
-    
-    -- ERROR TYPE (primary error for grouping)
-    CASE
-        WHEN Z2 IS NOT NULL AND Z2 < Z1 THEN 'Z2 < Z1'
-        WHEN Z2 IS NOT NULL AND Z2 > Z1 AND (Z2 - Z1) < 6 THEN 'Low Clearance'
-        WHEN Z2 IS NOT NULL AND Z2 > Z1 AND OPENING_HEIGHT IS NOT NULL
-            AND GREATEST(CSE_LEN, CSE_WID, CSE_HGT) > OPENING_HEIGHT THEN 'Case Exceeds Opening'
-        WHEN LDES_ID = 'SF' AND
-            (CASE WHEN CSE_LEN > 24 THEN 1 ELSE 0 END +
-             CASE WHEN CSE_WID > 24 THEN 1 ELSE 0 END +
-             CASE WHEN CSE_HGT > 24 THEN 1 ELSE 0 END) >= 2 THEN 'SF 2 Dims > 24'
-        ELSE 'No Error'
-    END AS ERROR_TYPE
+    END AS OPPORTUNITY_TYPE
 
 FROM WITH_CAPACITY
--- No restrictive WHERE - all data included
--- Filter in Power BI:
---   Home/Detail: HAS_ERROR = 'N' AND OPPORTUNITY >= 0
---   Error Page:  HAS_ERROR = 'Y'
-ORDER BY DC_NAME, PICK_SLOT
+WHERE Z2 IS NOT NULL
+  AND Z2 > Z1
+  AND OPPORTUNITY >= 0
+ORDER BY REPLEN_SAVED_PER_YEAR DESC NULLS LAST
