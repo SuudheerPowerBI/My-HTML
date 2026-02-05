@@ -1,8 +1,23 @@
-Opportunity Types HTML = 
-"<style>body{font-family:Segoe UI,sans-serif;padding:12px}h2{color:#CC0000;font-size:15px;border-bottom:2px solid #CC0000;padding-bottom:6px;margin-bottom:10px}.c{border:1px solid #e0e0e0;border-radius:6px;margin-bottom:8px;overflow:hidden}.h{display:flex;align-items:center;gap:8px;padding:8px 10px;font-weight:700;font-size:12px}.d{width:12px;height:12px;border-radius:50%}.b{padding:0 10px 8px 30px;font-size:11px;color:#555;line-height:1.4}.f{background:#f5f5f5;font-family:Consolas,monospace;font-size:10px;padding:2px 6px;border-radius:3px;display:inline-block;margin-top:3px}</style>
-<h2>OPPORTUNITY TYPES</h2>
-<div class='c'><div class='h' style='background:#E3F2FD'><div class='d' style='background:#1E88E5'></div>FW - Both Depth/Stack</div><div class='b'>Can add cases front-to-back AND stack higher. Highest impact.<br><span class='f'>CASES_PER_LANE > CASECAP AND MAX_STACK >= 2</span></div></div>
-<div class='c'><div class='h' style='background:#E8F5E9'><div class='d' style='background:#4CAF50'></div>FW - DoubleStack</div><div class='b'>Can stack higher but depth is maximized.<br><span class='f'>MAX_STACK_LAYERS >= 2</span></div></div>
-<div class='c'><div class='h' style='background:#FFF8E1'><div class='d' style='background:#FFC107'></div>FW - Depth Underutilized</div><div class='b'>More cases fit in depth but cannot stack.<br><span class='f'>CASES_PER_LANE > CASECAP</span></div></div>
-<div class='c'><div class='h' style='background:#FFF3E0'><div class='d' style='background:#FF9800'></div>SF - Underutilized Capacity</div><div class='b'>Shelf can hold more cases based on dimensions.<br><span class='f'>FLOOR(24/Max) x FLOOR(FW/Med) x FLOOR(12/Min) > CASECAP</span></div></div>
-<div class='c'><div class='h' style='background:#F5F5F5'><div class='d' style='background:#9E9E9E'></div>OK</div><div class='b'>CASECAP matches or exceeds calculated optimal. No action needed.</div></div>"
+Filters Applied HTML = 
+"<style>body{font-family:Segoe UI,sans-serif;padding:12px}h2{color:#CC0000;font-size:15px;border-bottom:2px solid #CC0000;padding-bottom:6px;margin-bottom:10px}table{width:100%;border-collapse:collapse;font-size:11px}th{background:#CC0000;color:#fff;padding:6px 8px;text-align:left}td{padding:5px 8px;border-bottom:1px solid #eee}tr:nth-child(even){background:#f9f9f9}td:first-child{font-weight:600;width:160px}.g{background:#f5f5f5;font-weight:700;color:#CC0000;font-size:10px;text-transform:uppercase;letter-spacing:1px}.g td{padding:6px 8px}.cd{font-family:Consolas,monospace;font-size:10px;background:#f0f0f0;padding:1px 4px;border-radius:2px;color:#CC0000}</style>
+<h2>FILTERS APPLIED</h2>
+<table>
+<tr><th>Filter</th><th>Condition</th><th>Reason</th></tr>
+<tr class='g'><td colspan='3'>Location Filters</td></tr>
+<tr><td>Pick Locations</td><td><span class='cd'>LCUS_ID = 'P'</span></td><td>Active pick custody only</td></tr>
+<tr><td>CASECAP Range</td><td><span class='cd'>1 to 99</span></td><td>Excludes empty and bulk</td></tr>
+<tr><td>Z Coordinate</td><td><span class='cd'>Z_COORD <= 55</span></td><td>Reachable pick height</td></tr>
+<tr><td>Depth Required</td><td><span class='cd'>STK_POS_DEP > 0</span></td><td>Valid depth data</td></tr>
+<tr><td>Location Types</td><td><span class='cd'>LDES_ID <> 'RK'</span></td><td>FW and SF only</td></tr>
+<tr class='g'><td colspan='3'>Product Filters</td></tr>
+<tr><td>Cube Range</td><td><span class='cd'>0.03 to 2.0</span></td><td>Excludes tiny/oversized</td></tr>
+<tr><td>Footprint</td><td><span class='cd'>L x W >= 24</span></td><td>Minimum case footprint</td></tr>
+<tr><td>Eaches Check</td><td><span class='cd'>EA_CUB x CSE_UNIT <= 1.5 x CSE_CUB</span></td><td>Dimension consistency</td></tr>
+<tr><td>Valid Dimensions</td><td><span class='cd'>H, L, W > 0</span></td><td>All dimensions populated</td></tr>
+<tr><td>Weight</td><td><span class='cd'>CSE_WGT < 30</span></td><td>Safety limit for stacking</td></tr>
+<tr><td>Excluded Products</td><td><span class='cd'>Class NOT 5505-5899</span></td><td>Fragrances, beverages, supplies</td></tr>
+<tr class='g'><td colspan='3'>Scope Filters</td></tr>
+<tr><td>Excluded DCs</td><td><span class='cd'>DC_ID NOT IN (7,22)</span></td><td>AL and JC excluded</td></tr>
+<tr><td>ASELD Functions</td><td><span class='cd'>JCFN_ID IN ('05','11')</span></td><td>Split case picks only</td></tr>
+<tr><td>Time Range</td><td><span class='cd'>Rolling 12 months</span></td><td>Annual volume window</td></tr>
+</table>"
