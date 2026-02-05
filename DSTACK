@@ -1,15 +1,9 @@
 -- ============================================================
--- DOUBLE STACK OPPORTUNITY FINDER - SNOWFLAKE VERSION v7
+-- DOUBLE STACK OPPORTUNITY FINDER - SNOWFLAKE VERSION v8
 -- Schema: CORE_FSSC.CURATED_LOGISTICS
--- Updates:
---   1. Full schema on all tables
---   2. Markouts (OUT_QTY, Future Markouts, Markouts Saved)
---   3. Filter out AL (7), JC (22)
---   4. Level 5 only excluded from double stack (not SF/FW depth)
---   5. LOW CLEARANCE threshold < 6
---   6. FLOOR on replen columns
---   7. SF product count per shelf (dynamic facing width)
---   8. JCFN_ID filter on ASELD
+-- Clean: One SUGGESTED_CASECAP, one OPPORTUNITY (no separate SF/FW columns)
+-- FW = CASES_PER_LANE × MAX_STACK_LAYERS
+-- SF = FLOOR(24/Max) × FLOOR(FACING_WIDTH/Med) × FLOOR(12/Min)
 -- ============================================================
 
 WITH ANNUAL_VOLUME AS (
@@ -25,7 +19,6 @@ WITH ANNUAL_VOLUME AS (
     GROUP BY DC_ID, WHSE_ID, PROD_ID
 ),
 
--- Count products per shelf for SF facing width calculation
 SHELF_PRODUCT_COUNT AS (
     SELECT 
         B.DC_ID,
@@ -105,8 +98,8 @@ BASE_DATA AS (
         ) AS SECTION,
         V.ANNUAL_UNITS,
         V.OUT_QTY,
-        SPC.PRODUCTS_ON_SHELF,
-        SPC.FACING_WIDTH
+        COALESCE(SPC.PRODUCTS_ON_SHELF, 4) AS PRODUCTS_ON_SHELF,
+        COALESCE(SPC.FACING_WIDTH, 12) AS FACING_WIDTH
     FROM CORE_FSSC.CURATED_LOGISTICS.IPLAS A
     JOIN CORE_FSSC.CURATED_LOGISTICS.ILOC B 
         ON A.LOC_ID = B.LOC_ID 
@@ -144,8 +137,7 @@ BASE_DATA AS (
       AND P.MAJOR_MINOR_CLASS NOT BETWEEN 5505 AND 5899
       AND B.LDES_ID <> 'RK'
       AND D.CSE_WGT < 30
-      AND A.DC_ID NOT IN (7, 22)  -- Exclude AL, JC
-      -- Removed: B.LEV < 5 (Level 5 only excluded from double stack)
+      AND A.DC_ID NOT IN (7, 22)
 ),
 
 WITH_Z2 AS (
@@ -179,7 +171,8 @@ WITH_OPENING AS (
 WITH_CALCS AS (
     SELECT
         O.*,
-        -- MAX_STACK_LAYERS: Level 5 forced to 1 (no double stack)
+        
+        -- MAX_STACK_LAYERS: Level 5 forced to 1
         CASE
             WHEN LEV >= 5 THEN 1
             WHEN Z2 IS NULL THEN 1
@@ -195,21 +188,43 @@ WITH_CALCS AS (
                  )
         END AS MAX_STACK_LAYERS,
         
-        -- CASES_PER_LANE (for FW)
+        -- CASES_PER_LANE
         FLOOR(STK_POS_DEP / NULLIF(GREATEST(CSE_LEN, CSE_WID), 0)) AS CASES_PER_LANE,
         
-        -- SF_POTENTIAL_CASECAP: Uses dynamic FACING_WIDTH based on products per shelf
-        -- FACING_WIDTH = 48 / products_on_shelf (default 12 if 4 products)
-        FLOOR(COALESCE(FACING_WIDTH, 12) / NULLIF(GREATEST(CSE_LEN, CSE_WID, CSE_HGT), 0)) *
-        FLOOR(12 / NULLIF(
-            CASE 
-                WHEN CSE_LEN >= CSE_WID AND CSE_LEN <= CSE_HGT THEN CSE_LEN
-                WHEN CSE_LEN <= CSE_WID AND CSE_LEN >= CSE_HGT THEN CSE_LEN
-                WHEN CSE_WID >= CSE_LEN AND CSE_WID <= CSE_HGT THEN CSE_WID
-                WHEN CSE_WID <= CSE_LEN AND CSE_WID >= CSE_HGT THEN CSE_WID
-                ELSE CSE_HGT
-            END, 0)) *
-        FLOOR(12 / NULLIF(LEAST(CSE_LEN, CSE_WID, CSE_HGT), 0)) AS SF_POTENTIAL_CASECAP
+        -- SUGGESTED_CASECAP: One column, right formula per LDES_ID
+        CASE
+            WHEN LDES_ID = 'FW' THEN
+                FLOOR(STK_POS_DEP / NULLIF(GREATEST(CSE_LEN, CSE_WID), 0)) *
+                CASE
+                    WHEN LEV >= 5 THEN 1
+                    WHEN Z2 IS NULL THEN 1
+                    WHEN Z2 <= Z1 THEN 1
+                    WHEN OPENING_HEIGHT IS NULL THEN 1
+                    WHEN CSE_HGT = 0 THEN 1
+                    ELSE GREATEST(LEAST(FLOOR(OPENING_HEIGHT / CSE_HGT), 4), 1)
+                END
+            WHEN LDES_ID = 'SF' THEN
+                FLOOR(24 / NULLIF(GREATEST(CSE_LEN, CSE_WID, CSE_HGT), 0)) *
+                FLOOR(FACING_WIDTH / NULLIF(
+                    CASE 
+                        WHEN CSE_LEN >= CSE_WID AND CSE_LEN <= CSE_HGT THEN CSE_LEN
+                        WHEN CSE_LEN <= CSE_WID AND CSE_LEN >= CSE_HGT THEN CSE_LEN
+                        WHEN CSE_WID >= CSE_LEN AND CSE_WID <= CSE_HGT THEN CSE_WID
+                        WHEN CSE_WID <= CSE_LEN AND CSE_WID >= CSE_HGT THEN CSE_WID
+                        ELSE CSE_HGT
+                    END, 0)) *
+                FLOOR(12 / NULLIF(LEAST(CSE_LEN, CSE_WID, CSE_HGT), 0))
+            ELSE
+                FLOOR(STK_POS_DEP / NULLIF(GREATEST(CSE_LEN, CSE_WID), 0)) *
+                CASE
+                    WHEN LEV >= 5 THEN 1
+                    WHEN Z2 IS NULL THEN 1
+                    WHEN Z2 <= Z1 THEN 1
+                    WHEN OPENING_HEIGHT IS NULL THEN 1
+                    WHEN CSE_HGT = 0 THEN 1
+                    ELSE GREATEST(LEAST(FLOOR(OPENING_HEIGHT / CSE_HGT), 4), 1)
+                END
+        END AS SUGGESTED_CASECAP
         
     FROM WITH_OPENING O
 ),
@@ -217,22 +232,9 @@ WITH_CALCS AS (
 WITH_CAPACITY AS (
     SELECT
         C.*,
-        -- FW_MAX_CAPACITY
-        CASES_PER_LANE * MAX_STACK_LAYERS AS FW_MAX_CAPACITY,
         
-        -- SUGGESTED_CASECAP
-        CASE
-            WHEN LDES_ID = 'SF' THEN SF_POTENTIAL_CASECAP
-            WHEN LDES_ID = 'FW' THEN CASES_PER_LANE * MAX_STACK_LAYERS
-            ELSE CASES_PER_LANE * MAX_STACK_LAYERS
-        END AS SUGGESTED_CASECAP,
-        
-        -- OPPORTUNITY
-        CASE
-            WHEN LDES_ID = 'SF' THEN SF_POTENTIAL_CASECAP - CASECAP
-            WHEN LDES_ID = 'FW' THEN (CASES_PER_LANE * MAX_STACK_LAYERS) - CASECAP
-            ELSE (CASES_PER_LANE * MAX_STACK_LAYERS) - CASECAP
-        END AS OPPORTUNITY
+        -- OPPORTUNITY: One column
+        SUGGESTED_CASECAP - CASECAP AS OPPORTUNITY
         
     FROM WITH_CALCS C
 )
@@ -258,6 +260,7 @@ SELECT
     STK_POS_DEP,
     CASECAP,
     SUGGESTED_CASECAP,
+    OPPORTUNITY,
     REPLEN_LEVEL,
     ANNUAL_UNITS,
     OUT_QTY AS CURRENT_MARKOUTS,
@@ -266,11 +269,10 @@ SELECT
     Z1,
     Z2,
     OPENING_HEIGHT,
-    MAX_CASE_DIM,
-    MED_CASE_DIM,
-    MIN_CASE_DIM,
+    MAX_STACK_LAYERS,
+    CASES_PER_LANE,
     
-    -- Z VALIDATION (threshold changed to < 6)
+    -- Z VALIDATION
     CASE
         WHEN Z2 IS NULL THEN 'TOP SHELF - N/A'
         WHEN Z2 <= Z1 THEN 'Z COORDINATE ERROR'
@@ -278,31 +280,22 @@ SELECT
         ELSE 'OK'
     END AS Z_VALIDATION,
     
-    MAX_STACK_LAYERS,
-    CASES_PER_LANE,
-    FW_MAX_CAPACITY,
-    SF_POTENTIAL_CASECAP,
-    OPPORTUNITY,
-    
     -- =====================================================
     -- REPLENISHMENT CALCULATIONS (FLOOR - no decimals)
     -- =====================================================
     
-    -- Current Replenishments/Year
     CASE
         WHEN (CASECAP * CSE_UNIT - REPLEN_LEVEL) <= 0 THEN NULL
         WHEN ANNUAL_UNITS IS NULL THEN NULL
         ELSE FLOOR(ANNUAL_UNITS / (CASECAP * CSE_UNIT - REPLEN_LEVEL))
     END AS CURRENT_REPLEN_PER_YEAR,
     
-    -- Future Replenishments/Year
     CASE
         WHEN (SUGGESTED_CASECAP * CSE_UNIT - REPLEN_LEVEL) <= 0 THEN NULL
         WHEN ANNUAL_UNITS IS NULL THEN NULL
         ELSE FLOOR(ANNUAL_UNITS / (SUGGESTED_CASECAP * CSE_UNIT - REPLEN_LEVEL))
     END AS FUTURE_REPLEN_PER_YEAR,
     
-    -- Replenishments Saved/Year
     CASE
         WHEN (CASECAP * CSE_UNIT - REPLEN_LEVEL) <= 0 THEN NULL
         WHEN (SUGGESTED_CASECAP * CSE_UNIT - REPLEN_LEVEL) <= 0 THEN NULL
@@ -317,7 +310,6 @@ SELECT
     -- MARKOUT CALCULATIONS
     -- =====================================================
     
-    -- Future Markouts = (future replen / current replen) × Current Markouts
     CASE
         WHEN (CASECAP * CSE_UNIT - REPLEN_LEVEL) <= 0 THEN NULL
         WHEN (SUGGESTED_CASECAP * CSE_UNIT - REPLEN_LEVEL) <= 0 THEN NULL
@@ -330,7 +322,6 @@ SELECT
         )
     END AS FUTURE_MARKOUTS,
     
-    -- Markouts Saved = Current Markouts - Future Markouts
     CASE
         WHEN (CASECAP * CSE_UNIT - REPLEN_LEVEL) <= 0 THEN NULL
         WHEN (SUGGESTED_CASECAP * CSE_UNIT - REPLEN_LEVEL) <= 0 THEN NULL
@@ -344,32 +335,6 @@ SELECT
     END AS MARKOUTS_SAVED,
     
     -- =====================================================
-    -- FW SPECIFIC METRICS
-    -- =====================================================
-    CASE
-        WHEN LDES_ID = 'FW' THEN CASES_PER_LANE
-        ELSE NULL
-    END AS FW_POTENTIAL_DEPTH,
-    
-    CASE
-        WHEN LDES_ID = 'FW' THEN CASES_PER_LANE - CASECAP
-        ELSE NULL
-    END AS FW_DEPTH_OPPORTUNITY,
-    
-    -- =====================================================
-    -- SF SPECIFIC METRICS
-    -- =====================================================
-    CASE
-        WHEN LDES_ID = 'SF' THEN SF_POTENTIAL_CASECAP
-        ELSE NULL
-    END AS SF_POTENTIAL,
-    
-    CASE
-        WHEN LDES_ID = 'SF' THEN SF_POTENTIAL_CASECAP - CASECAP
-        ELSE NULL
-    END AS SF_OPPORTUNITY,
-    
-    -- =====================================================
     -- FLAGS
     -- =====================================================
     CASE
@@ -380,7 +345,7 @@ SELECT
     END AS DOUBLE_STACK_FLAG,
     
     CASE
-        WHEN CASES_PER_LANE > CASECAP THEN 'Y'
+        WHEN LDES_ID = 'FW' AND CASES_PER_LANE > CASECAP THEN 'Y'
         ELSE 'N'
     END AS DEPTH_OPP_FLAG,
     
@@ -389,7 +354,7 @@ SELECT
     -- =====================================================
     CASE
         -- SF: Underutilized Capacity
-        WHEN LDES_ID = 'SF' AND SF_POTENTIAL_CASECAP > CASECAP
+        WHEN LDES_ID = 'SF' AND SUGGESTED_CASECAP > CASECAP
         THEN 'SF - Underutilized Capacity'
         
         -- FW: Both Depth AND Stack
