@@ -1,45 +1,54 @@
-WITH RACK_LEVELS AS (
+WITH COMPARE AS (
     SELECT
-        B.DC_ID,
-        B.WHSE_ID,
-        B.LOC_ID,
-        SUBSTR(B.LOC_ID, 1, 3) AS LOC_PREFIX,
-        B.X_COORD,
-        B.Y_COORD,
-        B.Z_COORD,
-        B.LEV AS ORIGINAL_LEV,
+        A.DC_ID,
+        A.LOC_ID AS PICK_SLOT,
         B.LDES_ID,
-        ROW_NUMBER() OVER (
-            PARTITION BY B.DC_ID, B.WHSE_ID,
-                         SUBSTR(B.LOC_ID, 1, 3),
-                         B.X_COORD, B.Y_COORD
-            ORDER BY B.Z_COORD ASC
-        ) AS CALC_LEVEL
-    FROM CORE_FSSC.CURATED_LOGISTICS.ILOC B
-    JOIN CORE_FSSC.CURATED_LOGISTICS.IPLAS A
-        ON B.LOC_ID = A.LOC_ID
-        AND B.DC_ID = A.DC_ID
-        AND B.WHSE_ID = A.WHSE_ID
+        B.LEV,
+        B.Z_COORD AS Z1,
+        B.SEL_POS_HGT,
+        (SELECT MIN(C.Z_COORD)
+         FROM CORE_FSSC.CURATED_LOGISTICS.ILOC C
+         WHERE C.X_COORD = B.X_COORD
+           AND C.Y_COORD = B.Y_COORD
+           AND C.DC_ID = B.DC_ID
+           AND C.WHSE_ID = B.WHSE_ID
+           AND C.LEV = B.LEV + 1
+           AND SUBSTR(C.LOC_ID, 1, 3) = SUBSTR(A.LOC_ID, 1, 3)
+        ) AS Z2
+    FROM CORE_FSSC.CURATED_LOGISTICS.IPLAS A
+    JOIN CORE_FSSC.CURATED_LOGISTICS.ILOC B 
+        ON A.LOC_ID = B.LOC_ID 
+        AND A.DC_ID = B.DC_ID 
+        AND A.WHSE_ID = B.WHSE_ID
     WHERE A.LCUS_ID = 'P'
       AND B.LDES_ID IN ('FW', 'SF')
-      AND B.DC_ID NOT IN (7, 22)
+      AND A.DC_ID NOT IN (7, 22)
 )
 
 SELECT
     DC_ID,
-    WHSE_ID,
-    LOC_ID,
-    LOC_PREFIX,
-    X_COORD,
-    Y_COORD,
-    Z_COORD,
-    ORIGINAL_LEV,
-    CALC_LEVEL,
+    PICK_SLOT,
     LDES_ID,
+    LEV,
+    Z1,
+    Z2,
+    SEL_POS_HGT,
+    Z2 - Z1 AS Z_DIFF_RAW,
+    CASE 
+        WHEN LDES_ID = 'FW' THEN Z2 - Z1 - 6
+        ELSE Z2 - Z1 - 2
+    END AS Z_CALC_OPENING,
+    SEL_POS_HGT - CASE 
+        WHEN LDES_ID = 'FW' THEN Z2 - Z1 - 6
+        ELSE Z2 - Z1 - 2
+    END AS DIFF,
     CASE
-        WHEN ORIGINAL_LEV = CALC_LEVEL THEN 'MATCH'
-        WHEN ORIGINAL_LEV IS NULL OR ORIGINAL_LEV = 0 THEN 'LEV MISSING'
-        ELSE 'MISMATCH'
-    END AS LEV_STATUS
-FROM RACK_LEVELS
-ORDER BY DC_ID, LOC_PREFIX, X_COORD, Y_COORD, Z_COORD
+        WHEN Z2 IS NULL THEN 'Z2 MISSING'
+        WHEN SEL_POS_HGT = Z2 - Z1 THEN 'SEL = Z_DIFF_RAW'
+        WHEN SEL_POS_HGT = (Z2 - Z1 - 6) AND LDES_ID = 'FW' THEN 'SEL = OPENING (FW)'
+        WHEN SEL_POS_HGT = (Z2 - Z1 - 2) AND LDES_ID = 'SF' THEN 'SEL = OPENING (SF)'
+        ELSE 'NO MATCH'
+    END AS MATCH_TYPE
+FROM COMPARE
+WHERE Z2 IS NOT NULL
+ORDER BY DC_ID, PICK_SLOT
