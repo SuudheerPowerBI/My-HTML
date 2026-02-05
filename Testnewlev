@@ -1,54 +1,102 @@
-WITH COMPARE AS (
-    SELECT
-        A.DC_ID,
-        A.LOC_ID AS PICK_SLOT,
-        B.LDES_ID,
-        B.LEV,
-        B.Z_COORD AS Z1,
-        B.SEL_POS_HGT,
-        (SELECT MIN(C.Z_COORD)
-         FROM CORE_FSSC.CURATED_LOGISTICS.ILOC C
-         WHERE C.X_COORD = B.X_COORD
-           AND C.Y_COORD = B.Y_COORD
-           AND C.DC_ID = B.DC_ID
-           AND C.WHSE_ID = B.WHSE_ID
-           AND C.LEV = B.LEV + 1
-           AND SUBSTR(C.LOC_ID, 1, 3) = SUBSTR(A.LOC_ID, 1, 3)
-        ) AS Z2
-    FROM CORE_FSSC.CURATED_LOGISTICS.IPLAS A
-    JOIN CORE_FSSC.CURATED_LOGISTICS.ILOC B 
-        ON A.LOC_ID = B.LOC_ID 
-        AND A.DC_ID = B.DC_ID 
-        AND A.WHSE_ID = B.WHSE_ID
-    WHERE A.LCUS_ID = 'P'
-      AND B.LDES_ID IN ('FW', 'SF')
-      AND A.DC_ID NOT IN (7, 22)
-)
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #ffffff; padding: 16px; }
+  .header { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; border-bottom: 3px solid #CC0000; padding-bottom: 12px; }
+  .header-icon { width: 32px; height: 32px; background: #CC0000; border-radius: 6px; display: flex; align-items: center; justify-content: center; }
+  .header-icon svg { width: 18px; height: 18px; fill: #ffffff; }
+  .header h2 { font-size: 16px; font-weight: 700; color: #1a1a1a; letter-spacing: 0.5px; }
+  .card { border: 1px solid #e0e0e0; border-radius: 8px; margin-bottom: 10px; overflow: hidden; }
+  .card-header { display: flex; align-items: center; gap: 10px; padding: 10px 14px; }
+  .color-dot { width: 14px; height: 14px; border-radius: 50%; flex-shrink: 0; }
+  .card-title { font-weight: 700; font-size: 13px; color: #1a1a1a; }
+  .card-tag { font-size: 10px; font-weight: 600; padding: 2px 8px; border-radius: 10px; margin-left: auto; }
+  .card-body { padding: 0 14px 10px 38px; font-size: 12px; color: #555; line-height: 1.5; }
+  .fw-both .card-header { background: #E3F2FD; }
+  .fw-both .color-dot { background: #1E88E5; }
+  .fw-both .card-tag { background: #1E88E5; color: white; }
+  .fw-stack .card-header { background: #E8F5E9; }
+  .fw-stack .color-dot { background: #4CAF50; }
+  .fw-stack .card-tag { background: #4CAF50; color: white; }
+  .fw-depth .card-header { background: #FFF8E1; }
+  .fw-depth .color-dot { background: #FFC107; }
+  .fw-depth .card-tag { background: #FFC107; color: #333; }
+  .sf-under .card-header { background: #FFF3E0; }
+  .sf-under .color-dot { background: #FF9800; }
+  .sf-under .card-tag { background: #FF9800; color: white; }
+  .ok .card-header { background: #F5F5F5; }
+  .ok .color-dot { background: #9E9E9E; }
+  .ok .card-tag { background: #9E9E9E; color: white; }
+  .formula { background: #f5f5f5; font-family: 'Consolas', monospace; font-size: 11px; padding: 4px 8px; border-radius: 4px; display: inline-block; margin-top: 4px; color: #333; }
+</style>
+</head>
+<body>
+  <div class="header">
+    <div class="header-icon">
+      <svg viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
+    </div>
+    <h2>OPPORTUNITY TYPES</h2>
+  </div>
 
-SELECT
-    DC_ID,
-    PICK_SLOT,
-    LDES_ID,
-    LEV,
-    Z1,
-    Z2,
-    SEL_POS_HGT,
-    Z2 - Z1 AS Z_DIFF_RAW,
-    CASE 
-        WHEN LDES_ID = 'FW' THEN Z2 - Z1 - 6
-        ELSE Z2 - Z1 - 2
-    END AS Z_CALC_OPENING,
-    SEL_POS_HGT - CASE 
-        WHEN LDES_ID = 'FW' THEN Z2 - Z1 - 6
-        ELSE Z2 - Z1 - 2
-    END AS DIFF,
-    CASE
-        WHEN Z2 IS NULL THEN 'Z2 MISSING'
-        WHEN SEL_POS_HGT = Z2 - Z1 THEN 'SEL = Z_DIFF_RAW'
-        WHEN SEL_POS_HGT = (Z2 - Z1 - 6) AND LDES_ID = 'FW' THEN 'SEL = OPENING (FW)'
-        WHEN SEL_POS_HGT = (Z2 - Z1 - 2) AND LDES_ID = 'SF' THEN 'SEL = OPENING (SF)'
-        ELSE 'NO MATCH'
-    END AS MATCH_TYPE
-FROM COMPARE
-WHERE Z2 IS NOT NULL
-ORDER BY DC_ID, PICK_SLOT
+  <div class="card fw-both">
+    <div class="card-header">
+      <div class="color-dot"></div>
+      <div class="card-title">FW - Both Depth/Stack</div>
+      <div class="card-tag">FW</div>
+    </div>
+    <div class="card-body">
+      Flow rack slot can add more cases front-to-back <strong>AND</strong> stack cases higher. Highest impact — improves both lane depth and vertical utilization.
+      <br><span class="formula">CASES_PER_LANE > CASECAP AND MAX_STACK_LAYERS >= 2</span>
+    </div>
+  </div>
+
+  <div class="card fw-stack">
+    <div class="card-header">
+      <div class="color-dot"></div>
+      <div class="card-title">FW - DoubleStack</div>
+      <div class="card-tag">FW</div>
+    </div>
+    <div class="card-body">
+      Flow rack slot can stack cases higher but depth is already maximized. Vertical space is available above current product.
+      <br><span class="formula">MAX_STACK_LAYERS >= 2 (depth already at capacity)</span>
+    </div>
+  </div>
+
+  <div class="card fw-depth">
+    <div class="card-header">
+      <div class="color-dot"></div>
+      <div class="card-title">FW - Depth Underutilized</div>
+      <div class="card-tag">FW</div>
+    </div>
+    <div class="card-body">
+      Flow rack slot can fit more cases front-to-back but cannot stack higher. Lane has unused depth behind current cases.
+      <br><span class="formula">CASES_PER_LANE > CASECAP (no vertical opportunity)</span>
+    </div>
+  </div>
+
+  <div class="card sf-under">
+    <div class="card-header">
+      <div class="color-dot"></div>
+      <div class="card-title">SF - Underutilized Capacity</div>
+      <div class="card-tag">SF</div>
+    </div>
+    <div class="card-body">
+      Static shelf slot can hold more cases based on shelf footprint (24" × facing width × 12") and product dimensions.
+      <br><span class="formula">FLOOR(24/Max) × FLOOR(FacingWidth/Med) × FLOOR(12/Min) > CASECAP</span>
+    </div>
+  </div>
+
+  <div class="card ok">
+    <div class="card-header">
+      <div class="color-dot"></div>
+      <div class="card-title">OK</div>
+      <div class="card-tag">—</div>
+    </div>
+    <div class="card-body">
+      Current CASECAP matches or exceeds the calculated optimal capacity. No action needed. Slot is properly utilized.
+    </div>
+  </div>
+</body>
+</html>
