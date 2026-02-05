@@ -1,23 +1,50 @@
-Filters Applied HTML = 
-"<style>body{font-family:Segoe UI,sans-serif;padding:12px}h2{color:#CC0000;font-size:15px;border-bottom:2px solid #CC0000;padding-bottom:6px;margin-bottom:10px}table{width:100%;border-collapse:collapse;font-size:11px}th{background:#CC0000;color:#fff;padding:6px 8px;text-align:left}td{padding:5px 8px;border-bottom:1px solid #eee}tr:nth-child(even){background:#f9f9f9}td:first-child{font-weight:600;width:160px}.g{background:#f5f5f5;font-weight:700;color:#CC0000;font-size:10px;text-transform:uppercase;letter-spacing:1px}.g td{padding:6px 8px}.cd{font-family:Consolas,monospace;font-size:10px;background:#f0f0f0;padding:1px 4px;border-radius:2px;color:#CC0000}</style>
-<h2>FILTERS APPLIED</h2>
+Definitions HTML = 
+"<style>body{font-family:Segoe UI,sans-serif;padding:12px}h2{color:#CC0000;font-size:15px;border-bottom:2px solid #CC0000;padding-bottom:6px;margin-bottom:10px}table{width:100%;border-collapse:collapse;font-size:11px}th{background:#CC0000;color:#fff;padding:6px 8px;text-align:left}td{padding:5px 8px;border-bottom:1px solid #eee}tr:nth-child(even){background:#f9f9f9}td:first-child{font-weight:700;color:#CC0000;width:200px}.g{background:#f5f5f5;font-weight:700;color:#CC0000;font-size:10px;text-transform:uppercase;letter-spacing:1px}.g td{padding:6px 8px}</style>
+<h2>DEFINITIONS & GLOSSARY</h2>
 <table>
-<tr><th>Filter</th><th>Condition</th><th>Reason</th></tr>
-<tr class='g'><td colspan='3'>Location Filters</td></tr>
-<tr><td>Pick Locations</td><td><span class='cd'>LCUS_ID = 'P'</span></td><td>Active pick custody only</td></tr>
-<tr><td>CASECAP Range</td><td><span class='cd'>1 to 99</span></td><td>Excludes empty and bulk</td></tr>
-<tr><td>Z Coordinate</td><td><span class='cd'>Z_COORD <= 55</span></td><td>Reachable pick height</td></tr>
-<tr><td>Depth Required</td><td><span class='cd'>STK_POS_DEP > 0</span></td><td>Valid depth data</td></tr>
-<tr><td>Location Types</td><td><span class='cd'>LDES_ID <> 'RK'</span></td><td>FW and SF only</td></tr>
-<tr class='g'><td colspan='3'>Product Filters</td></tr>
-<tr><td>Cube Range</td><td><span class='cd'>0.03 to 2.0</span></td><td>Excludes tiny/oversized</td></tr>
-<tr><td>Footprint</td><td><span class='cd'>L x W >= 24</span></td><td>Minimum case footprint</td></tr>
-<tr><td>Eaches Check</td><td><span class='cd'>EA_CUB x CSE_UNIT <= 1.5 x CSE_CUB</span></td><td>Dimension consistency</td></tr>
-<tr><td>Valid Dimensions</td><td><span class='cd'>H, L, W > 0</span></td><td>All dimensions populated</td></tr>
-<tr><td>Weight</td><td><span class='cd'>CSE_WGT < 30</span></td><td>Safety limit for stacking</td></tr>
-<tr><td>Excluded Products</td><td><span class='cd'>Class NOT 5505-5899</span></td><td>Fragrances, beverages, supplies</td></tr>
-<tr class='g'><td colspan='3'>Scope Filters</td></tr>
-<tr><td>Excluded DCs</td><td><span class='cd'>DC_ID NOT IN (7,22)</span></td><td>AL and JC excluded</td></tr>
-<tr><td>ASELD Functions</td><td><span class='cd'>JCFN_ID IN ('05','11')</span></td><td>Split case picks only</td></tr>
-<tr><td>Time Range</td><td><span class='cd'>Rolling 12 months</span></td><td>Annual volume window</td></tr>
+<tr><th>Name</th><th>Definition</th></tr>
+<tr class='g'><td colspan='2'>Location & Product</td></tr>
+<tr><td>DC_NAME</td><td>Distribution Center abbreviation (WN, IN, PA, NJ, etc.)</td></tr>
+<tr><td>WHSE_ID</td><td>Warehouse identifier within a distribution center</td></tr>
+<tr><td>SECTION</td><td>Warehouse section the pick slot belongs to</td></tr>
+<tr><td>LDES_ID</td><td>Location type: FW = Flow Rack, SF = Static Shelf</td></tr>
+<tr><td>PICK_SLOT</td><td>Physical pick location ID in the warehouse</td></tr>
+<tr><td>SKU_NBR</td><td>Product identifier (SKU number)</td></tr>
+<tr><td>DESCRIPTION</td><td>Product description</td></tr>
+<tr><td>LEV</td><td>Rack level (1 = ground, 2 = second, etc.)</td></tr>
+<tr><td>CSE_LEN / WID / HGT</td><td>Case length, width, height in inches</td></tr>
+<tr><td>CSE_CUB</td><td>Case cubic volume</td></tr>
+<tr><td>CSE_WGT</td><td>Case weight in pounds</td></tr>
+<tr><td>CASEPACK</td><td>Number of eaches (units) per case</td></tr>
+<tr><td>STK_POS_DEP</td><td>Stock position depth of the pick slot in inches</td></tr>
+<tr class='g'><td colspan='2'>Core Calculations</td></tr>
+<tr><td>CASECAP</td><td>Current case capacity assigned to the pick slot</td></tr>
+<tr><td>SUGGESTED_CASECAP</td><td>Calculated optimal capacity. FW: depth x stack. SF: shelf formula</td></tr>
+<tr><td>OPPORTUNITY</td><td>SUGGESTED_CASECAP minus CASECAP. Positive = room to add cases</td></tr>
+<tr><td>REPLEN_LEVEL</td><td>Replenishment trigger level in units. When inventory drops below this, a replen is triggered</td></tr>
+<tr class='g'><td colspan='2'>Z Coordinate Calculations</td></tr>
+<tr><td>Z1</td><td>Z coordinate (height in inches) of the current pick slot level</td></tr>
+<tr><td>Z2</td><td>Z coordinate of the level directly above the pick slot</td></tr>
+<tr><td>OPENING_HEIGHT</td><td>Usable vertical space. FW: Z2 - Z1 - 6in buffer. SF: Z2 - Z1 - 2in buffer</td></tr>
+<tr><td>MAX_STACK_LAYERS</td><td>Cases that stack vertically = FLOOR(OPENING_HEIGHT / CSE_HGT). Min 1, max 4. Level 5+ = 1</td></tr>
+<tr class='g'><td colspan='2'>Flow Rack (FW) Calculations</td></tr>
+<tr><td>CASES_PER_LANE</td><td>FLOOR(STK_POS_DEP / longest case dimension). Cases fitting front to back in the lane</td></tr>
+<tr><td>FW SUGGESTED_CASECAP</td><td>CASES_PER_LANE x MAX_STACK_LAYERS. Total cases the slot can hold</td></tr>
+<tr class='g'><td colspan='2'>Static Shelf (SF) Calculations</td></tr>
+<tr><td>PRODUCTS_ON_SHELF</td><td>Count of distinct products sharing the same shelf position (X, Y, Level)</td></tr>
+<tr><td>FACING_WIDTH</td><td>48 inches / products on shelf. Width allocated to each product on the shelf</td></tr>
+<tr><td>SF SUGGESTED_CASECAP</td><td>FLOOR(24 / Max Dim) x FLOOR(Facing Width / Med Dim) x FLOOR(12 / Min Dim)</td></tr>
+<tr class='g'><td colspan='2'>Replenishment Calculations</td></tr>
+<tr><td>ANNUAL_UNITS</td><td>Total units picked from this slot in the past 12 months</td></tr>
+<tr><td>CURRENT_REPLEN_PER_YEAR</td><td>Annual replen trips today = ANNUAL_UNITS / (CASECAP x CASEPACK - REPLEN_LEVEL)</td></tr>
+<tr><td>FUTURE_REPLEN_PER_YEAR</td><td>Annual replen trips after optimization = ANNUAL_UNITS / (SUGGESTED x CASEPACK - REPLEN_LEVEL)</td></tr>
+<tr><td>REPLEN_SAVED_PER_YEAR</td><td>Trips eliminated = CURRENT_REPLEN - FUTURE_REPLEN. Each saved trip = labor saved</td></tr>
+<tr class='g'><td colspan='2'>Markout Calculations</td></tr>
+<tr><td>CURRENT_MARKOUTS</td><td>Annual units marked out (damaged, expired, short) = PROD_QTY - ACT_PICK_QTY from ASELD</td></tr>
+<tr><td>FUTURE_MARKOUTS</td><td>Projected markouts after optimization = (FUTURE_REPLEN / CURRENT_REPLEN) x CURRENT_MARKOUTS</td></tr>
+<tr><td>MARKOUTS_SAVED</td><td>Units saved = CURRENT_MARKOUTS - FUTURE_MARKOUTS. Fewer replenishments = less product exposure</td></tr>
+<tr class='g'><td colspan='2'>Flags</td></tr>
+<tr><td>DOUBLE_STACK_FLAG</td><td>Y if MAX_STACK_LAYERS >= 2. Vertical stacking opportunity exists</td></tr>
+<tr><td>DEPTH_OPP_FLAG</td><td>Y if CASES_PER_LANE > CASECAP for FW locations. Lane depth is underused</td></tr>
+<tr><td>OPPORTUNITY_TYPE</td><td>Category: FW-Both, FW-DoubleStack, FW-Depth, SF-Underutilized, or OK</td></tr>
 </table>"
