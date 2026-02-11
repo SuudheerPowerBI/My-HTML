@@ -1,18 +1,13 @@
 -- ============================================================
--- DOUBLE STACK OPPORTUNITY FINDER - SNOWFLAKE VERSION v9
+-- DOUBLE STACK OPPORTUNITY FINDER - SNOWFLAKE VERSION v10
 -- Schema: CORE_FSSC.CURATED_LOGISTICS
 -- 
--- CHANGES FROM v8:
---   1. Removed final WHERE filters (Z2 NOT NULL, Z2>Z1, OPP>=0)
---      so ALL rows come through — errors are now FLAG COLUMNS
---   2. Added Micah's 4 error flags for Page 3:
---      • ERR_Z2_LESS_THAN_Z1    (Z2 < Z1)
---      • ERR_LOW_CLEARANCE       (Z2-Z1 < 6)
---      • ERR_DIM_EXCEEDS_OPENING (Max case dim > opening height)
---      • ERR_SF_TWO_DIMS_GT_24   (SF shelf with 2 dims > 24")
---   3. Added ERROR_FLAG (Y/N) and ERROR_DETAIL for BI slicing
---   4. Added ROW_STATUS: 'ERROR', 'OPPORTUNITY', 'NO OPPORTUNITY'
---      so Power BI can filter pages cleanly
+-- CHANGES FROM v9:
+--   1. Added NUM_LANES and STK_LMT from ILOC table
+--   2. Added DC_USING_NUM_LANES flag (Y if > 1)
+--   3. Added DC_USING_STK_LMT flag (Y if > 1)
+--   4. Added VALIDATION_STATUS to compare calculated vs CASECAP
+--      using NUM_LANES * STK_LMT
 --
 -- FW = CASES_PER_LANE × MAX_STACK_LAYERS
 -- SF = FLOOR(24/Max) × FLOOR(FACING_WIDTH/Med) × FLOOR(12/Min)
@@ -84,6 +79,8 @@ BASE_DATA AS (
         B.Y_COORD,
         B.STK_POS_DEP,
         B.LDES_ID,
+        B.NUM_LANES,    -- NEW: Added for Micah
+        B.STK_LMT,      -- NEW: Added for Micah
         D.CSE_HGT,
         D.CSE_LEN,
         D.CSE_WID,
@@ -293,6 +290,52 @@ SELECT
     END AS Z_VALIDATION,
     
     -- =====================================================
+    -- NEW: MICAH'S NUM_LANES & STK_LMT COLUMNS
+    -- =====================================================
+    
+    -- Raw values from ILOC
+    NUM_LANES,
+    STK_LMT,
+    
+    -- DC using NUM_LANES? (Y if > 1, most are 1 or blank)
+    CASE 
+        WHEN COALESCE(NUM_LANES, 1) > 1 THEN 'Y'
+        ELSE 'N'
+    END AS DC_USING_NUM_LANES,
+    
+    -- DC using STK_LMT? (Y if > 1, most are 1 or blank)
+    CASE 
+        WHEN COALESCE(STK_LMT, 1) > 1 THEN 'Y'
+        ELSE 'N'
+    END AS DC_USING_STK_LMT,
+    
+    -- Expected multiplier from ILOC fields
+    CASE 
+        WHEN COALESCE(NUM_LANES, 1) > 1 OR COALESCE(STK_LMT, 1) > 1 
+        THEN COALESCE(NUM_LANES, 1) * COALESCE(STK_LMT, 1)
+        ELSE NULL
+    END AS ILOC_MULTIPLIER,
+    
+    -- Validation: Compare calculated CASES_PER_LANE * STK_LMT * NUM_LANES vs CASECAP
+    CASE
+        -- DC is using these fields (at least one > 1)
+        WHEN COALESCE(NUM_LANES, 1) > 1 OR COALESCE(STK_LMT, 1) > 1 THEN
+            CASE 
+                -- Calculated matches CASECAP
+                WHEN FLOOR(STK_POS_DEP / NULLIF(GREATEST(CSE_LEN, CSE_WID), 0)) 
+                     * COALESCE(STK_LMT, 1) 
+                     * COALESCE(NUM_LANES, 1) = CASECAP
+                THEN 'MATCHES'
+                ELSE 'CHECK'
+            END
+        -- DC not using these fields, but CASECAP > single lane capacity
+        -- Means they're likely double stacking or double facing
+        WHEN CASECAP > FLOOR(STK_POS_DEP / NULLIF(GREATEST(CSE_LEN, CSE_WID), 0))
+        THEN 'POSSIBLE DOUBLE STACK/LANE'
+        ELSE NULL
+    END AS VALIDATION_STATUS,
+    
+    -- =====================================================
     -- MICAH'S ERROR FLAGS (Page 3)
     -- =====================================================
     
@@ -490,9 +533,9 @@ SELECT
 FROM WITH_CAPACITY
 
 -- =====================================================
--- v9: NO hard filters — all rows come through
+-- v10: NO hard filters — all rows come through
 -- Use ROW_STATUS or ERROR_FLAG in Power BI to slice pages
 -- =====================================================
 ORDER BY 
-    ERROR_FLAG DESC,                          -- Errors first
-    REPLEN_SAVED_PER_YEAR DESC NULLS LAST
+    ERROR_FLAG DESC,
+    REPLEN_SAVED_PER_YEAR DESC NULLS LAST;
