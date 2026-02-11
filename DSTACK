@@ -1,15 +1,17 @@
 -- ============================================================
 -- DOUBLE STACK OPPORTUNITY FINDER - SNOWFLAKE VERSION v10
 -- Schema: CORE_FSSC.CURATED_LOGISTICS
--- 
--- CHANGES FROM v9:
---   1. Added NUM_LANES and STK_LMT from ILOC table
---   2. Added DC_USING_NUM_LANES flag (Y if > 1)
---   3. Added DC_USING_STK_LMT flag (Y if > 1)
---   4. Added VALIDATION_STATUS to compare calculated vs CASECAP
---      using NUM_LANES * STK_LMT
 --
--- FW = CASES_PER_LANE × MAX_STACK_LAYERS
+-- CHANGES FROM v8:
+--   1. Added NUM_LANES and STK_LMT from ILOC table
+--   2. Incorporated into SUGGESTED_CASECAP calculation:
+--      - If STK_LMT > 1, use MIN(STK_LMT, calculated MAX_STACK_LAYERS)
+--      - If NUM_LANES > 1, multiply CASES_PER_LANE by NUM_LANES
+--   3. Added ILOC_CONFIG_FLAG: 'Y' if DC is actively using these fields
+--   4. Added CASECAP_VALIDATION: Infers if double stacking/facing in use
+--   5. Added INFERRED_MULTIPLIER: What multiplier explains current CASECAP
+--
+-- FW = CASES_PER_LANE × NUM_LANES × MIN(STK_LMT, MAX_STACK_LAYERS)
 -- SF = FLOOR(24/Max) × FLOOR(FACING_WIDTH/Med) × FLOOR(12/Min)
 -- ============================================================
 
@@ -79,8 +81,9 @@ BASE_DATA AS (
         B.Y_COORD,
         B.STK_POS_DEP,
         B.LDES_ID,
-        B.NUM_LANES,    -- NEW: Added for Micah
-        B.STK_LMT,      -- NEW: Added for Micah
+        -- NEW: NUM_LANES and STK_LMT from ILOC
+        COALESCE(B.NUM_LANES, 1) AS NUM_LANES,
+        COALESCE(B.STK_LMT, 1) AS STK_LMT,
         D.CSE_HGT,
         D.CSE_LEN,
         D.CSE_WID,
@@ -181,7 +184,7 @@ WITH_CALCS AS (
     SELECT
         O.*,
         
-        -- MAX_STACK_LAYERS: Level 5 forced to 1
+        -- CALCULATED_MAX_STACK: Based purely on opening height / case height
         CASE
             WHEN LEV >= 5 THEN 1
             WHEN Z2 IS NULL THEN 1
@@ -195,23 +198,61 @@ WITH_CALCS AS (
                     ),
                     1
                  )
+        END AS CALCULATED_MAX_STACK,
+        
+        -- MAX_STACK_LAYERS: Use STK_LMT if > 1, otherwise use calculated
+        -- Cap at the lesser of STK_LMT (if set) and physical max
+        CASE
+            WHEN LEV >= 5 THEN 1
+            WHEN Z2 IS NULL THEN 1
+            WHEN Z2 <= Z1 THEN 1
+            WHEN OPENING_HEIGHT IS NULL THEN 1
+            WHEN CSE_HGT = 0 THEN 1
+            ELSE 
+                CASE
+                    -- If STK_LMT is actively used (> 1), take MIN of STK_LMT and calculated
+                    WHEN COALESCE(STK_LMT, 1) > 1 THEN
+                        LEAST(
+                            STK_LMT,
+                            GREATEST(LEAST(FLOOR(OPENING_HEIGHT / CSE_HGT), 4), 1)
+                        )
+                    -- Otherwise just use calculated
+                    ELSE
+                        GREATEST(LEAST(FLOOR(OPENING_HEIGHT / CSE_HGT), 4), 1)
+                END
         END AS MAX_STACK_LAYERS,
         
-        -- CASES_PER_LANE
+        -- CASES_PER_LANE (single lane depth)
         FLOOR(STK_POS_DEP / NULLIF(GREATEST(CSE_LEN, CSE_WID), 0)) AS CASES_PER_LANE,
         
-        -- SUGGESTED_CASECAP: One column, right formula per LDES_ID
+        -- EFFECTIVE_LANES: Use NUM_LANES if > 1, otherwise 1
+        CASE 
+            WHEN COALESCE(NUM_LANES, 1) > 1 THEN NUM_LANES
+            ELSE 1
+        END AS EFFECTIVE_LANES,
+        
+        -- SUGGESTED_CASECAP: Now incorporates NUM_LANES and STK_LMT
         CASE
             WHEN LDES_ID = 'FW' THEN
-                FLOOR(STK_POS_DEP / NULLIF(GREATEST(CSE_LEN, CSE_WID), 0)) *
-                CASE
+                -- Cases per lane
+                FLOOR(STK_POS_DEP / NULLIF(GREATEST(CSE_LEN, CSE_WID), 0))
+                -- × Number of lanes (use NUM_LANES if > 1)
+                * CASE WHEN COALESCE(NUM_LANES, 1) > 1 THEN NUM_LANES ELSE 1 END
+                -- × Stack layers (use MIN of STK_LMT and calculated if STK_LMT > 1)
+                * CASE
                     WHEN LEV >= 5 THEN 1
                     WHEN Z2 IS NULL THEN 1
                     WHEN Z2 <= Z1 THEN 1
                     WHEN OPENING_HEIGHT IS NULL THEN 1
                     WHEN CSE_HGT = 0 THEN 1
-                    ELSE GREATEST(LEAST(FLOOR(OPENING_HEIGHT / CSE_HGT), 4), 1)
-                END
+                    WHEN COALESCE(STK_LMT, 1) > 1 THEN
+                        LEAST(
+                            STK_LMT,
+                            GREATEST(LEAST(FLOOR((Z2 - Z1 - 6) / CSE_HGT), 4), 1)
+                        )
+                    ELSE
+                        GREATEST(LEAST(FLOOR((Z2 - Z1 - 6) / CSE_HGT), 4), 1)
+                  END
             WHEN LDES_ID = 'SF' THEN
                 FLOOR(24 / NULLIF(GREATEST(CSE_LEN, CSE_WID, CSE_HGT), 0)) *
                 FLOOR(FACING_WIDTH / NULLIF(
@@ -224,16 +265,26 @@ WITH_CALCS AS (
                     END, 0)) *
                 FLOOR(12 / NULLIF(LEAST(CSE_LEN, CSE_WID, CSE_HGT), 0))
             ELSE
-                FLOOR(STK_POS_DEP / NULLIF(GREATEST(CSE_LEN, CSE_WID), 0)) *
-                CASE
+                FLOOR(STK_POS_DEP / NULLIF(GREATEST(CSE_LEN, CSE_WID), 0))
+                * CASE WHEN COALESCE(NUM_LANES, 1) > 1 THEN NUM_LANES ELSE 1 END
+                * CASE
                     WHEN LEV >= 5 THEN 1
                     WHEN Z2 IS NULL THEN 1
                     WHEN Z2 <= Z1 THEN 1
                     WHEN OPENING_HEIGHT IS NULL THEN 1
                     WHEN CSE_HGT = 0 THEN 1
-                    ELSE GREATEST(LEAST(FLOOR(OPENING_HEIGHT / CSE_HGT), 4), 1)
-                END
-        END AS SUGGESTED_CASECAP
+                    WHEN COALESCE(STK_LMT, 1) > 1 THEN
+                        LEAST(
+                            STK_LMT,
+                            GREATEST(LEAST(FLOOR((Z2 - Z1 - 6) / CSE_HGT), 4), 1)
+                        )
+                    ELSE
+                        GREATEST(LEAST(FLOOR((Z2 - Z1 - 6) / CSE_HGT), 4), 1)
+                  END
+        END AS SUGGESTED_CASECAP,
+        
+        -- BASE_CASECAP: Single lane, single stack (for validation)
+        FLOOR(STK_POS_DEP / NULLIF(GREATEST(CSE_LEN, CSE_WID), 0)) AS BASE_CASECAP
         
     FROM WITH_OPENING O
 ),
@@ -267,6 +318,11 @@ SELECT
     CSE_WGT,
     CSE_UNIT AS CASEPACK,
     STK_POS_DEP,
+    
+    -- NEW: ILOC configuration fields
+    NUM_LANES,
+    STK_LMT,
+    
     CASECAP,
     SUGGESTED_CASECAP,
     OPPORTUNITY,
@@ -278,10 +334,70 @@ SELECT
     Z1,
     Z2,
     OPENING_HEIGHT,
+    
+    -- Stack/Lane calculations
+    CALCULATED_MAX_STACK,
     MAX_STACK_LAYERS,
     CASES_PER_LANE,
+    EFFECTIVE_LANES,
+    BASE_CASECAP,
     
-    -- Z VALIDATION (kept for backward compatibility)
+    -- =====================================================
+    -- ILOC CONFIGURATION FLAGS
+    -- =====================================================
+    
+    -- Is the DC actively using NUM_LANES or STK_LMT?
+    CASE
+        WHEN NUM_LANES > 1 OR STK_LMT > 1 THEN 'Y'
+        ELSE 'N'
+    END AS ILOC_CONFIG_FLAG,
+    
+    -- Which config is being used?
+    CASE
+        WHEN NUM_LANES > 1 AND STK_LMT > 1 THEN 'Both Lanes & Stack'
+        WHEN NUM_LANES > 1 THEN 'Lanes Only'
+        WHEN STK_LMT > 1 THEN 'Stack Only'
+        ELSE 'Not Configured'
+    END AS ILOC_CONFIG_TYPE,
+    
+    -- =====================================================
+    -- CASECAP VALIDATION (Micah's inference logic)
+    -- If CASECAP > BASE_CASECAP, they must be double stacking/facing
+    -- =====================================================
+    
+    -- Inferred multiplier: What's the ratio of actual to base?
+    CASE
+        WHEN BASE_CASECAP > 0 THEN ROUND(CASECAP * 1.0 / BASE_CASECAP, 1)
+        ELSE NULL
+    END AS INFERRED_MULTIPLIER,
+    
+    -- Validation: Does the math check out?
+    CASE
+        WHEN BASE_CASECAP IS NULL OR BASE_CASECAP = 0 THEN 'Cannot Calculate'
+        WHEN CASECAP = BASE_CASECAP THEN 'Single Stack/Lane'
+        WHEN CASECAP = BASE_CASECAP * 2 THEN 'Likely 2x (Stack or Lane)'
+        WHEN CASECAP = BASE_CASECAP * 3 THEN 'Likely 3x'
+        WHEN CASECAP = BASE_CASECAP * 4 THEN 'Likely 4x (2 Lanes × 2 Stack?)'
+        WHEN CASECAP > BASE_CASECAP THEN 'Multiplier in Use'
+        WHEN CASECAP < BASE_CASECAP THEN 'Under Capacity'
+        ELSE 'Check Data'
+    END AS CASECAP_VALIDATION,
+    
+    -- Does ILOC config match what we'd infer from CASECAP?
+    CASE
+        WHEN BASE_CASECAP IS NULL OR BASE_CASECAP = 0 THEN 'Cannot Validate'
+        -- Config says multi but CASECAP = base → mismatch
+        WHEN (NUM_LANES > 1 OR STK_LMT > 1) AND CASECAP = BASE_CASECAP 
+            THEN 'Config Set but Not Used'
+        -- Config = 1 but CASECAP > base → inferred multiplier
+        WHEN NUM_LANES <= 1 AND STK_LMT <= 1 AND CASECAP > BASE_CASECAP 
+            THEN 'Multiplier Used, Config Missing'
+        -- Config matches reality
+        WHEN NUM_LANES > 1 OR STK_LMT > 1 THEN 'Config Matches'
+        ELSE 'OK - Single'
+    END AS CONFIG_VS_ACTUAL,
+    
+    -- Z VALIDATION
     CASE
         WHEN Z2 IS NULL THEN 'TOP SHELF - N/A'
         WHEN Z2 <= Z1 THEN 'Z COORDINATE ERROR'
@@ -289,146 +405,6 @@ SELECT
         ELSE 'OK'
     END AS Z_VALIDATION,
     
-    -- =====================================================
-    -- NEW: MICAH'S NUM_LANES & STK_LMT COLUMNS
-    -- =====================================================
-    
-    -- Raw values from ILOC
-    NUM_LANES,
-    STK_LMT,
-    
-    -- DC using NUM_LANES? (Y if > 1, most are 1 or blank)
-    CASE 
-        WHEN COALESCE(NUM_LANES, 1) > 1 THEN 'Y'
-        ELSE 'N'
-    END AS DC_USING_NUM_LANES,
-    
-    -- DC using STK_LMT? (Y if > 1, most are 1 or blank)
-    CASE 
-        WHEN COALESCE(STK_LMT, 1) > 1 THEN 'Y'
-        ELSE 'N'
-    END AS DC_USING_STK_LMT,
-    
-    -- Expected multiplier from ILOC fields
-    CASE 
-        WHEN COALESCE(NUM_LANES, 1) > 1 OR COALESCE(STK_LMT, 1) > 1 
-        THEN COALESCE(NUM_LANES, 1) * COALESCE(STK_LMT, 1)
-        ELSE NULL
-    END AS ILOC_MULTIPLIER,
-    
-    -- Validation: Compare calculated CASES_PER_LANE * STK_LMT * NUM_LANES vs CASECAP
-    CASE
-        -- DC is using these fields (at least one > 1)
-        WHEN COALESCE(NUM_LANES, 1) > 1 OR COALESCE(STK_LMT, 1) > 1 THEN
-            CASE 
-                -- Calculated matches CASECAP
-                WHEN FLOOR(STK_POS_DEP / NULLIF(GREATEST(CSE_LEN, CSE_WID), 0)) 
-                     * COALESCE(STK_LMT, 1) 
-                     * COALESCE(NUM_LANES, 1) = CASECAP
-                THEN 'MATCHES'
-                ELSE 'CHECK'
-            END
-        -- DC not using these fields, but CASECAP > single lane capacity
-        -- Means they're likely double stacking or double facing
-        WHEN CASECAP > FLOOR(STK_POS_DEP / NULLIF(GREATEST(CSE_LEN, CSE_WID), 0))
-        THEN 'POSSIBLE DOUBLE STACK/LANE'
-        ELSE NULL
-    END AS VALIDATION_STATUS,
-    
-    -- =====================================================
-    -- MICAH'S ERROR FLAGS (Page 3)
-    -- =====================================================
-    
-    -- Error 1: Z2 < Z1 (coordinate data issue)
-    CASE
-        WHEN Z2 IS NOT NULL AND Z2 < Z1 THEN 'Y'
-        ELSE 'N'
-    END AS ERR_Z2_LESS_THAN_Z1,
-    
-    -- Error 2: Z2 - Z1 < 6 (low clearance — not enough room)
-    CASE
-        WHEN Z2 IS NOT NULL AND Z2 > Z1 AND (Z2 - Z1) < 6 THEN 'Y'
-        ELSE 'N'
-    END AS ERR_LOW_CLEARANCE,
-    
-    -- Error 3: Max case dimension > opening height
-    CASE
-        WHEN Z2 IS NOT NULL AND Z2 > Z1
-             AND OPENING_HEIGHT IS NOT NULL
-             AND GREATEST(CSE_LEN, CSE_WID, CSE_HGT) > OPENING_HEIGHT
-        THEN 'Y'
-        ELSE 'N'
-    END AS ERR_DIM_EXCEEDS_OPENING,
-    
-    -- Error 4: Static shelf (SF) with 2 dims > 24"
-    CASE
-        WHEN LDES_ID = 'SF'
-             AND (
-                   (CASE WHEN CSE_LEN > 24 THEN 1 ELSE 0 END)
-                 + (CASE WHEN CSE_WID > 24 THEN 1 ELSE 0 END)
-                 + (CASE WHEN CSE_HGT > 24 THEN 1 ELSE 0 END)
-                 ) >= 2
-        THEN 'Y'
-        ELSE 'N'
-    END AS ERR_SF_TWO_DIMS_GT_24,
-    
-    -- Overall ERROR_FLAG (Y if ANY error is flagged)
-    CASE
-        WHEN (Z2 IS NOT NULL AND Z2 < Z1)
-          OR (Z2 IS NOT NULL AND Z2 > Z1 AND (Z2 - Z1) < 6)
-          OR (Z2 IS NOT NULL AND Z2 > Z1 AND OPENING_HEIGHT IS NOT NULL
-              AND GREATEST(CSE_LEN, CSE_WID, CSE_HGT) > OPENING_HEIGHT)
-          OR (LDES_ID = 'SF'
-              AND (
-                    (CASE WHEN CSE_LEN > 24 THEN 1 ELSE 0 END)
-                  + (CASE WHEN CSE_WID > 24 THEN 1 ELSE 0 END)
-                  + (CASE WHEN CSE_HGT > 24 THEN 1 ELSE 0 END)
-                  ) >= 2)
-        THEN 'Y'
-        ELSE 'N'
-    END AS ERROR_FLAG,
-    
-    -- ERROR_DETAIL: Pipe-separated list of all errors on this row
-    TRIM(
-        CASE WHEN Z2 IS NOT NULL AND Z2 < Z1
-             THEN '|Z2 < Z1' ELSE '' END
-     || CASE WHEN Z2 IS NOT NULL AND Z2 > Z1 AND (Z2 - Z1) < 6
-             THEN '|Low Clearance' ELSE '' END
-     || CASE WHEN Z2 IS NOT NULL AND Z2 > Z1 AND OPENING_HEIGHT IS NOT NULL
-                  AND GREATEST(CSE_LEN, CSE_WID, CSE_HGT) > OPENING_HEIGHT
-             THEN '|Dim > Opening' ELSE '' END
-     || CASE WHEN LDES_ID = 'SF'
-                  AND (
-                        (CASE WHEN CSE_LEN > 24 THEN 1 ELSE 0 END)
-                      + (CASE WHEN CSE_WID > 24 THEN 1 ELSE 0 END)
-                      + (CASE WHEN CSE_HGT > 24 THEN 1 ELSE 0 END)
-                      ) >= 2
-             THEN '|SF 2 Dims > 24' ELSE '' END
-    , '|') AS ERROR_DETAIL,
-
-    -- =====================================================
-    -- ROW_STATUS: Single slicer for Power BI pages
-    --   'ERROR'          → Page 3 (Errors)
-    --   'OPPORTUNITY'    → Page 2 (Front Page) & detail tables
-    --   'NO OPPORTUNITY' → Clean rows, no action needed
-    -- =====================================================
-    CASE
-        WHEN (Z2 IS NOT NULL AND Z2 < Z1)
-          OR (Z2 IS NOT NULL AND Z2 > Z1 AND (Z2 - Z1) < 6)
-          OR (Z2 IS NOT NULL AND Z2 > Z1 AND OPENING_HEIGHT IS NOT NULL
-              AND GREATEST(CSE_LEN, CSE_WID, CSE_HGT) > OPENING_HEIGHT)
-          OR (LDES_ID = 'SF'
-              AND (
-                    (CASE WHEN CSE_LEN > 24 THEN 1 ELSE 0 END)
-                  + (CASE WHEN CSE_WID > 24 THEN 1 ELSE 0 END)
-                  + (CASE WHEN CSE_HGT > 24 THEN 1 ELSE 0 END)
-                  ) >= 2)
-        THEN 'ERROR'
-        WHEN (SUGGESTED_CASECAP - CASECAP) > 0
-        THEN 'OPPORTUNITY'
-        ELSE 'NO OPPORTUNITY'
-    END AS ROW_STATUS,
-
     -- =====================================================
     -- REPLENISHMENT CALCULATIONS (FLOOR - no decimals)
     -- =====================================================
@@ -531,11 +507,7 @@ SELECT
     END AS OPPORTUNITY_TYPE
 
 FROM WITH_CAPACITY
-
--- =====================================================
--- v10: NO hard filters — all rows come through
--- Use ROW_STATUS or ERROR_FLAG in Power BI to slice pages
--- =====================================================
-ORDER BY 
-    ERROR_FLAG DESC,
-    REPLEN_SAVED_PER_YEAR DESC NULLS LAST;
+WHERE Z2 IS NOT NULL
+  AND Z2 > Z1
+  AND OPPORTUNITY >= 0
+ORDER BY REPLEN_SAVED_PER_YEAR DESC NULLS LAST
