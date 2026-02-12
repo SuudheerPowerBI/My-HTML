@@ -162,7 +162,6 @@ WITH_Z2 AS (
            AND C.DC_ID = BD.DC_ID
            AND C.WHSE_ID = BD.WHSE_ID
            AND C.LEV = BD.LEV + 1
-           AND SUBSTR(C.LOC_ID, 1, 3) = BD.LOC_PREFIX
         ) AS Z2
     FROM BASE_DATA BD
 ),
@@ -445,6 +444,19 @@ SELECT
         ELSE 'N'
     END AS ERR_SF_TWO_DIMS_GT_24,
     
+    -- Error 5: Multiple Z values for same X,Y,LEV (IC data conflict)
+    CASE
+        WHEN (SELECT COUNT(DISTINCT C.Z_COORD)
+              FROM CORE_FSSC.CURATED_LOGISTICS.ILOC C
+              WHERE C.X_COORD = X_COORD
+                AND C.Y_COORD = Y_COORD
+                AND C.DC_ID = DC_ID
+                AND C.WHSE_ID = WHSE_ID
+                AND C.LEV = LEV) > 1
+        THEN 'Y'
+        ELSE 'N'
+    END AS ERR_MULTIPLE_Z_SAME_LEVEL,
+    
     -- Overall ERROR_FLAG (Y if ANY error is flagged)
     CASE
         WHEN (Z2 IS NOT NULL AND Z2 < Z1)
@@ -457,6 +469,13 @@ SELECT
                   + (CASE WHEN CSE_WID > 24 THEN 1 ELSE 0 END)
                   + (CASE WHEN CSE_HGT > 24 THEN 1 ELSE 0 END)
                   ) >= 2)
+          OR (SELECT COUNT(DISTINCT C.Z_COORD)
+              FROM CORE_FSSC.CURATED_LOGISTICS.ILOC C
+              WHERE C.X_COORD = X_COORD
+                AND C.Y_COORD = Y_COORD
+                AND C.DC_ID = DC_ID
+                AND C.WHSE_ID = WHSE_ID
+                AND C.LEV = LEV) > 1
         THEN 'Y'
         ELSE 'N'
     END AS ERROR_FLAG,
@@ -477,25 +496,21 @@ SELECT
                       + (CASE WHEN CSE_HGT > 24 THEN 1 ELSE 0 END)
                       ) >= 2
              THEN '|SF 2 Dims > 24' ELSE '' END
+     || CASE WHEN (SELECT COUNT(DISTINCT C.Z_COORD)
+                   FROM CORE_FSSC.CURATED_LOGISTICS.ILOC C
+                   WHERE C.X_COORD = X_COORD
+                     AND C.Y_COORD = Y_COORD
+                     AND C.DC_ID = DC_ID
+                     AND C.WHSE_ID = WHSE_ID
+                     AND C.LEV = LEV) > 1
+             THEN '|Multiple Z Same Level' ELSE '' END
     , '|') AS ERROR_DETAIL,
 
-    -- ROW_STATUS: Single slicer for Power BI pages
+    -- ROW_STATUS: Simple logic
     CASE
-        -- Error conditions first (Micah's Page 3)
         WHEN Z2 IS NULL THEN 'NO Z2 DATA'
-        WHEN Z2 <= Z1 THEN 'ERROR'
-        WHEN (Z2 - Z1) < 6 THEN 'ERROR'
-        WHEN OPENING_HEIGHT IS NOT NULL 
-             AND GREATEST(CSE_LEN, CSE_WID, CSE_HGT) > OPENING_HEIGHT THEN 'ERROR'
-        WHEN LDES_ID = 'SF'
-             AND ((CASE WHEN CSE_LEN > 24 THEN 1 ELSE 0 END)
-                + (CASE WHEN CSE_WID > 24 THEN 1 ELSE 0 END)
-                + (CASE WHEN CSE_HGT > 24 THEN 1 ELSE 0 END)) >= 2 THEN 'ERROR'
-        -- Opportunity categories
-        WHEN (SUGGESTED_CASECAP - CASECAP) > 0 THEN 'OPPORTUNITY'
-        WHEN (SUGGESTED_CASECAP - CASECAP) = 0 THEN 'OPTIMIZED'
-        WHEN (SUGGESTED_CASECAP - CASECAP) < 0 THEN 'OVER CAPACITY'
-        ELSE 'UNKNOWN'
+        WHEN (Z2 - Z1) >= 0 THEN 'OPPORTUNITY'
+        ELSE 'ERROR'
     END AS ROW_STATUS,
     
     -- =====================================================
