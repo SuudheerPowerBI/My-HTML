@@ -1,20 +1,32 @@
 -- ============================================================
 -- DOUBLE STACK OPPORTUNITY FINDER - SNOWFLAKE VERSION v10
 -- Schema: CORE_FSSC.CURATED_LOGISTICS
+-- Author: Sudheer / Micah
+-- Last Updated: February 2026
+-- ============================================================
 --
--- CHANGES FROM v8:
---   1. Added NUM_LANES and STK_LMT from ILOC table
---   2. Incorporated into SUGGESTED_CASECAP calculation:
---      - If STK_LMT > 1, use MIN(STK_LMT, calculated MAX_STACK_LAYERS)
---      - If NUM_LANES > 1, multiply CASES_PER_LANE by NUM_LANES
---   3. Added ILOC_CONFIG_FLAG: 'Y' if DC is actively using these fields
---   4. Added CASECAP_VALIDATION: Infers if double stacking/facing in use
---   5. Added INFERRED_MULTIPLIER: What multiplier explains current CASECAP
+-- OVERVIEW:
+--   Identifies pick slots where case capacity can be optimized
+--   through double stacking, depth utilization, or shelf flow.
 --
--- FW = CASES_PER_LANE × NUM_LANES × MIN(STK_LMT, MAX_STACK_LAYERS)
--- SF = FLOOR(24/Max) × FLOOR(FACING_WIDTH/Med) × FLOOR(12/Min)
+-- KEY FORMULAS:
+--   FW (Flow) = CASES_PER_LANE × NUM_LANES × MAX_STACK_LAYERS
+--   SF (Shelf) = FLOOR(24/Max) × FLOOR(FACING_WIDTH/Med) × FLOOR(12/Min)
+--
+-- KEY OUTPUTS:
+--   • OPPORTUNITY = SUGGESTED_CASECAP - CASECAP
+--   • ROW_STATUS: 'OPPORTUNITY', 'ERROR', 'NO Z2 DATA'
+--   • OPPORTUNITY_TYPE: FW-DoubleStack, FW-Depth, SF-Underutilized, etc.
+--
+-- FILTERS IN POWER BI:
+--   • Home Page: ROW_STATUS = 'OPPORTUNITY'
+--   • Errors Page: ROW_STATUS = 'ERROR' or ERROR_FLAG = 'Y'
+--
 -- ============================================================
 
+-- ============================================================
+-- CTE 1: ANNUAL VOLUME - Last 12 months pick activity
+-- ============================================================
 WITH ANNUAL_VOLUME AS (
     SELECT 
         DC_ID, 
@@ -28,6 +40,9 @@ WITH ANNUAL_VOLUME AS (
     GROUP BY DC_ID, WHSE_ID, PROD_ID
 ),
 
+-- ============================================================
+-- CTE 2: SHELF PRODUCT COUNT - For SF facing width calculation
+-- ============================================================
 SHELF_PRODUCT_COUNT AS (
     SELECT 
         B.DC_ID,
@@ -47,8 +62,12 @@ SHELF_PRODUCT_COUNT AS (
     GROUP BY B.DC_ID, B.WHSE_ID, B.X_COORD, B.Y_COORD, B.LEV
 ),
 
+-- ============================================================
+-- CTE 3: BASE DATA - Core slot and product information
+-- ============================================================
 BASE_DATA AS (
     SELECT
+        -- DC Name mapping
         CASE
             WHEN A.DC_ID = 1 THEN 'WN'
             WHEN A.DC_ID = 2 THEN 'IN'
@@ -68,22 +87,31 @@ BASE_DATA AS (
             WHEN A.DC_ID = 21 THEN 'KC'
             ELSE 'Other'
         END AS DC_NAME,
+        
+        -- Location identifiers
         A.DC_ID,
         A.WHSE_ID,
         A.PROD_ID AS SKU_NBR,
         A.LOC_ID AS PICK_SLOT,
         SUBSTR(A.LOC_ID, 1, 3) AS LOC_PREFIX,
+        
+        -- Current capacity settings
         A.LOC_STOR_CSE_CAP AS CASECAP,
         A.LOC_RPLN_LVL_UOI AS REPLEN_LEVEL,
+        
+        -- Location dimensions
         B.LEV,
         B.Z_COORD AS Z1,
         B.X_COORD,
         B.Y_COORD,
         B.STK_POS_DEP,
         B.LDES_ID,
-        -- NEW: NUM_LANES and STK_LMT from ILOC
+        
+        -- ILOC configuration (for validation)
         COALESCE(B.NUM_LANES, 1) AS NUM_LANES,
         COALESCE(B.STK_LMT, 1) AS STK_LMT,
+        
+        -- Case dimensions
         D.CSE_HGT,
         D.CSE_LEN,
         D.CSE_WID,
@@ -91,8 +119,12 @@ BASE_DATA AS (
         D.CSE_WGT,
         D.CSE_UNIT,
         D.EACHES_CUB,
+        
+        -- Product info
         P.DESCRIPTION,
         P.MAJOR_MINOR_CLASS,
+        
+        -- Calculated case dimensions
         GREATEST(D.CSE_LEN, D.CSE_WID, D.CSE_HGT) AS MAX_CASE_DIM,
         CASE 
             WHEN D.CSE_LEN >= D.CSE_WID AND D.CSE_LEN <= D.CSE_HGT THEN D.CSE_LEN
@@ -102,16 +134,23 @@ BASE_DATA AS (
             ELSE D.CSE_HGT
         END AS MED_CASE_DIM,
         LEAST(D.CSE_LEN, D.CSE_WID, D.CSE_HGT) AS MIN_CASE_DIM,
+        
+        -- Section lookup
         (SELECT MAX(S.SECT_ID)
          FROM CORE_FSSC.CURATED_LOGISTICS.FSELC S
          WHERE A.DC_ID = S.DC_ID
            AND A.WHSE_ID = S.WHSE_ID
            AND A.LOC_ID BETWEEN S.FROM_LOC_ID AND S.TO_LOC_ID
         ) AS SECTION,
+        
+        -- Volume data
         V.ANNUAL_UNITS,
         V.OUT_QTY,
+        
+        -- Shelf configuration
         COALESCE(SPC.PRODUCTS_ON_SHELF, 4) AS PRODUCTS_ON_SHELF,
         COALESCE(SPC.FACING_WIDTH, 12) AS FACING_WIDTH
+        
     FROM CORE_FSSC.CURATED_LOGISTICS.IPLAS A
     JOIN CORE_FSSC.CURATED_LOGISTICS.ILOC B 
         ON A.LOC_ID = B.LOC_ID 
@@ -134,6 +173,7 @@ BASE_DATA AS (
         AND B.X_COORD = SPC.X_COORD
         AND B.Y_COORD = SPC.Y_COORD
         AND B.LEV = SPC.LEV
+        
     WHERE A.LCUS_ID = 'P'
       AND A.LOC_STOR_CSE_CAP < 100
       AND A.LOC_STOR_CSE_CAP > 0
@@ -152,6 +192,9 @@ BASE_DATA AS (
       AND A.DC_ID NOT IN (7, 13, 22)
 ),
 
+-- ============================================================
+-- CTE 4: Z2 CALCULATION - Find Z coordinate of level above
+-- ============================================================
 WITH_Z2 AS (
     SELECT
         BD.*,
@@ -166,41 +209,40 @@ WITH_Z2 AS (
     FROM BASE_DATA BD
 ),
 
+-- ============================================================
+-- CTE 5: OPENING HEIGHT - Available vertical space
+-- ============================================================
 WITH_OPENING AS (
     SELECT
         W.*,
         CASE
             WHEN Z2 IS NULL THEN NULL
             WHEN Z2 <= Z1 THEN NULL
-            WHEN LDES_ID = 'FW' THEN Z2 - Z1 - 6
-            WHEN LDES_ID = 'SF' THEN Z2 - Z1 - 2
+            WHEN LDES_ID = 'FW' THEN Z2 - Z1 - 6   -- 6" for beam/pallet
+            WHEN LDES_ID = 'SF' THEN Z2 - Z1 - 2   -- 2" for shelf
             ELSE Z2 - Z1 - 6
         END AS OPENING_HEIGHT
     FROM WITH_Z2 W
 ),
 
+-- ============================================================
+-- CTE 6: CALCULATIONS - Stack layers, cases per lane, suggested casecap
+-- ============================================================
 WITH_CALCS AS (
     SELECT
         O.*,
         
-        -- CALCULATED_MAX_STACK: Based purely on opening height / case height
+        -- Calculated max stack (physics-based)
         CASE
             WHEN LEV >= 5 THEN 1
             WHEN Z2 IS NULL THEN 1
             WHEN Z2 <= Z1 THEN 1
             WHEN OPENING_HEIGHT IS NULL THEN 1
             WHEN CSE_HGT = 0 THEN 1
-            ELSE GREATEST(
-                    LEAST(
-                        FLOOR(OPENING_HEIGHT / CSE_HGT),
-                        4
-                    ),
-                    1
-                 )
+            ELSE GREATEST(LEAST(FLOOR(OPENING_HEIGHT / CSE_HGT), 4), 1)
         END AS CALCULATED_MAX_STACK,
         
-        -- MAX_STACK_LAYERS: Use STK_LMT if > 1, otherwise use calculated
-        -- Cap at the lesser of STK_LMT (if set) and physical max
+        -- Max stack layers (considers STK_LMT if configured)
         CASE
             WHEN LEV >= 5 THEN 1
             WHEN Z2 IS NULL THEN 1
@@ -209,35 +251,24 @@ WITH_CALCS AS (
             WHEN CSE_HGT = 0 THEN 1
             ELSE 
                 CASE
-                    -- If STK_LMT is actively used (> 1), take MIN of STK_LMT and calculated
                     WHEN COALESCE(STK_LMT, 1) > 1 THEN
-                        LEAST(
-                            STK_LMT,
-                            GREATEST(LEAST(FLOOR(OPENING_HEIGHT / CSE_HGT), 4), 1)
-                        )
-                    -- Otherwise just use calculated
+                        LEAST(STK_LMT, GREATEST(LEAST(FLOOR(OPENING_HEIGHT / CSE_HGT), 4), 1))
                     ELSE
                         GREATEST(LEAST(FLOOR(OPENING_HEIGHT / CSE_HGT), 4), 1)
                 END
         END AS MAX_STACK_LAYERS,
         
-        -- CASES_PER_LANE (single lane depth)
+        -- Cases per lane (depth)
         FLOOR(STK_POS_DEP / NULLIF(GREATEST(CSE_LEN, CSE_WID), 0)) AS CASES_PER_LANE,
         
-        -- EFFECTIVE_LANES: Use NUM_LANES if > 1, otherwise 1
-        CASE 
-            WHEN COALESCE(NUM_LANES, 1) > 1 THEN NUM_LANES
-            ELSE 1
-        END AS EFFECTIVE_LANES,
+        -- Effective lanes
+        CASE WHEN COALESCE(NUM_LANES, 1) > 1 THEN NUM_LANES ELSE 1 END AS EFFECTIVE_LANES,
         
-        -- SUGGESTED_CASECAP: Now incorporates NUM_LANES and STK_LMT
+        -- Suggested casecap
         CASE
             WHEN LDES_ID = 'FW' THEN
-                -- Cases per lane
                 FLOOR(STK_POS_DEP / NULLIF(GREATEST(CSE_LEN, CSE_WID), 0))
-                -- × Number of lanes (use NUM_LANES if > 1)
                 * CASE WHEN COALESCE(NUM_LANES, 1) > 1 THEN NUM_LANES ELSE 1 END
-                -- × Stack layers (use MIN of STK_LMT and calculated if STK_LMT > 1)
                 * CASE
                     WHEN LEV >= 5 THEN 1
                     WHEN Z2 IS NULL THEN 1
@@ -245,10 +276,7 @@ WITH_CALCS AS (
                     WHEN OPENING_HEIGHT IS NULL THEN 1
                     WHEN CSE_HGT = 0 THEN 1
                     WHEN COALESCE(STK_LMT, 1) > 1 THEN
-                        LEAST(
-                            STK_LMT,
-                            GREATEST(LEAST(FLOOR((Z2 - Z1 - 6) / CSE_HGT), 4), 1)
-                        )
+                        LEAST(STK_LMT, GREATEST(LEAST(FLOOR((Z2 - Z1 - 6) / CSE_HGT), 4), 1))
                     ELSE
                         GREATEST(LEAST(FLOOR((Z2 - Z1 - 6) / CSE_HGT), 4), 1)
                   END
@@ -273,16 +301,13 @@ WITH_CALCS AS (
                     WHEN OPENING_HEIGHT IS NULL THEN 1
                     WHEN CSE_HGT = 0 THEN 1
                     WHEN COALESCE(STK_LMT, 1) > 1 THEN
-                        LEAST(
-                            STK_LMT,
-                            GREATEST(LEAST(FLOOR((Z2 - Z1 - 6) / CSE_HGT), 4), 1)
-                        )
+                        LEAST(STK_LMT, GREATEST(LEAST(FLOOR((Z2 - Z1 - 6) / CSE_HGT), 4), 1))
                     ELSE
                         GREATEST(LEAST(FLOOR((Z2 - Z1 - 6) / CSE_HGT), 4), 1)
                   END
         END AS SUGGESTED_CASECAP,
         
-        -- BASE_CASECAP: Only calculate for FW, else use CASECAP
+        -- Base casecap (for validation - FW only)
         CASE 
             WHEN LDES_ID = 'FW' THEN FLOOR(STK_POS_DEP / NULLIF(GREATEST(CSE_LEN, CSE_WID), 0))
             ELSE CASECAP
@@ -291,17 +316,21 @@ WITH_CALCS AS (
     FROM WITH_OPENING O
 ),
 
+-- ============================================================
+-- CTE 7: OPPORTUNITY CALCULATION
+-- ============================================================
 WITH_CAPACITY AS (
     SELECT
         C.*,
-        
-        -- OPPORTUNITY: One column
         SUGGESTED_CASECAP - CASECAP AS OPPORTUNITY
-        
     FROM WITH_CALCS C
 )
 
+-- ============================================================
+-- FINAL SELECT
+-- ============================================================
 SELECT
+    -- Location identifiers
     DC_NAME,
     DC_ID,
     WHSE_ID,
@@ -313,6 +342,8 @@ SELECT
     MAJOR_MINOR_CLASS,
     DESCRIPTION,
     LEV,
+    
+    -- Case dimensions
     CSE_LEN,
     CSE_WID,
     CSE_HGT,
@@ -321,18 +352,25 @@ SELECT
     CSE_UNIT AS CASEPACK,
     STK_POS_DEP,
     
-    -- NEW: ILOC configuration fields
+    -- ILOC configuration
     NUM_LANES,
     STK_LMT,
     
+    -- Capacity metrics
     CASECAP,
     SUGGESTED_CASECAP,
     OPPORTUNITY,
     REPLEN_LEVEL,
+    
+    -- Volume metrics
     ANNUAL_UNITS,
     OUT_QTY AS CURRENT_MARKOUTS,
+    
+    -- Shelf metrics (SF only)
     PRODUCTS_ON_SHELF,
     FACING_WIDTH,
+    
+    -- Z coordinates
     Z1,
     Z2,
     OPENING_HEIGHT,
@@ -344,17 +382,9 @@ SELECT
     EFFECTIVE_LANES,
     BASE_CASECAP,
     
-    -- =====================================================
-    -- ILOC CONFIGURATION FLAGS
-    -- =====================================================
+    -- ILOC validation flags
+    CASE WHEN NUM_LANES > 1 OR STK_LMT > 1 THEN 'Y' ELSE 'N' END AS ILOC_CONFIG_FLAG,
     
-    -- Is the DC actively using NUM_LANES or STK_LMT?
-    CASE
-        WHEN NUM_LANES > 1 OR STK_LMT > 1 THEN 'Y'
-        ELSE 'N'
-    END AS ILOC_CONFIG_FLAG,
-    
-    -- Which config is being used?
     CASE
         WHEN NUM_LANES > 1 AND STK_LMT > 1 THEN 'Both Lanes & Stack'
         WHEN NUM_LANES > 1 THEN 'Lanes Only'
@@ -362,18 +392,12 @@ SELECT
         ELSE 'Not Configured'
     END AS ILOC_CONFIG_TYPE,
     
-    -- =====================================================
-    -- CASECAP VALIDATION (Micah's inference logic)
-    -- If CASECAP > BASE_CASECAP, they must be double stacking/facing
-    -- =====================================================
-    
-    -- Inferred multiplier: What's the ratio of actual to base?
+    -- Casecap validation
     CASE
         WHEN BASE_CASECAP > 0 THEN ROUND(CASECAP * 1.0 / BASE_CASECAP, 1)
         ELSE NULL
     END AS INFERRED_MULTIPLIER,
     
-    -- Validation: Does the math check out?
     CASE
         WHEN BASE_CASECAP IS NULL OR BASE_CASECAP = 0 THEN 'Cannot Calculate'
         WHEN CASECAP = BASE_CASECAP THEN 'Single Stack/Lane'
@@ -385,24 +409,16 @@ SELECT
         ELSE 'Check Data'
     END AS CASECAP_VALIDATION,
     
-    -- Does ILOC config match what we'd infer from CASECAP?
     CASE
         WHEN BASE_CASECAP IS NULL OR BASE_CASECAP = 0 THEN 'Cannot Validate'
-        -- Config says multi but CASECAP = base → mismatch
-        WHEN (NUM_LANES > 1 OR STK_LMT > 1) AND CASECAP = BASE_CASECAP 
-            THEN 'Config Set but Not Used'
-        -- Config = 1 but CASECAP > base → inferred multiplier
-        WHEN NUM_LANES <= 1 AND STK_LMT <= 1 AND CASECAP > BASE_CASECAP 
-            THEN 'Multiplier Used, Config Missing'
-        -- CASECAP < BASE_CASECAP → slot is under capacity
-        WHEN CASECAP < BASE_CASECAP 
-            THEN 'Under Capacity'
-        -- Config matches reality
+        WHEN (NUM_LANES > 1 OR STK_LMT > 1) AND CASECAP = BASE_CASECAP THEN 'Config Set but Not Used'
+        WHEN NUM_LANES <= 1 AND STK_LMT <= 1 AND CASECAP > BASE_CASECAP THEN 'Multiplier Used, Config Missing'
+        WHEN CASECAP < BASE_CASECAP THEN 'Under Capacity'
         WHEN NUM_LANES > 1 OR STK_LMT > 1 THEN 'Config Matches'
         ELSE 'OK - Single'
     END AS CONFIG_VS_ACTUAL,
     
-    -- Z VALIDATION
+    -- Z validation
     CASE
         WHEN Z2 IS NULL THEN 'TOP SHELF - N/A'
         WHEN Z2 <= Z1 THEN 'Z COORDINATE ERROR'
@@ -410,116 +426,41 @@ SELECT
         ELSE 'OK'
     END AS Z_VALIDATION,
     
-    -- =====================================================
-    -- MICAH'S ERROR FLAGS (Page 3)
-    -- =====================================================
+    -- Error flags (for Page 3)
+    CASE WHEN Z2 IS NOT NULL AND Z2 < Z1 THEN 'Y' ELSE 'N' END AS ERR_Z2_LESS_THAN_Z1,
+    CASE WHEN Z2 IS NOT NULL AND Z2 > Z1 AND (Z2 - Z1) < 6 THEN 'Y' ELSE 'N' END AS ERR_LOW_CLEARANCE,
+    CASE WHEN Z2 IS NOT NULL AND Z2 > Z1 AND OPENING_HEIGHT IS NOT NULL AND GREATEST(CSE_LEN, CSE_WID, CSE_HGT) > OPENING_HEIGHT THEN 'Y' ELSE 'N' END AS ERR_DIM_EXCEEDS_OPENING,
+    CASE WHEN LDES_ID = 'SF' AND ((CASE WHEN CSE_LEN > 24 THEN 1 ELSE 0 END) + (CASE WHEN CSE_WID > 24 THEN 1 ELSE 0 END) + (CASE WHEN CSE_HGT > 24 THEN 1 ELSE 0 END)) >= 2 THEN 'Y' ELSE 'N' END AS ERR_SF_TWO_DIMS_GT_24,
+    CASE WHEN (SELECT COUNT(DISTINCT C.Z_COORD) FROM CORE_FSSC.CURATED_LOGISTICS.ILOC C WHERE C.X_COORD = X_COORD AND C.Y_COORD = Y_COORD AND C.DC_ID = DC_ID AND C.WHSE_ID = WHSE_ID AND C.LEV = LEV) > 1 THEN 'Y' ELSE 'N' END AS ERR_MULTIPLE_Z_SAME_LEVEL,
     
-    -- Error 1: Z2 < Z1 (coordinate data issue)
-    CASE
-        WHEN Z2 IS NOT NULL AND Z2 < Z1 THEN 'Y'
-        ELSE 'N'
-    END AS ERR_Z2_LESS_THAN_Z1,
-    
-    -- Error 2: Z2 - Z1 < 6 (low clearance — not enough room)
-    CASE
-        WHEN Z2 IS NOT NULL AND Z2 > Z1 AND (Z2 - Z1) < 6 THEN 'Y'
-        ELSE 'N'
-    END AS ERR_LOW_CLEARANCE,
-    
-    -- Error 3: Max case dimension > opening height
-    CASE
-        WHEN Z2 IS NOT NULL AND Z2 > Z1
-             AND OPENING_HEIGHT IS NOT NULL
-             AND GREATEST(CSE_LEN, CSE_WID, CSE_HGT) > OPENING_HEIGHT
-        THEN 'Y'
-        ELSE 'N'
-    END AS ERR_DIM_EXCEEDS_OPENING,
-    
-    -- Error 4: Static shelf (SF) with 2 dims > 24"
-    CASE
-        WHEN LDES_ID = 'SF'
-             AND (
-                   (CASE WHEN CSE_LEN > 24 THEN 1 ELSE 0 END)
-                 + (CASE WHEN CSE_WID > 24 THEN 1 ELSE 0 END)
-                 + (CASE WHEN CSE_HGT > 24 THEN 1 ELSE 0 END)
-                 ) >= 2
-        THEN 'Y'
-        ELSE 'N'
-    END AS ERR_SF_TWO_DIMS_GT_24,
-    
-    -- Error 5: Multiple Z values for same X,Y,LEV (IC data conflict)
-    CASE
-        WHEN (SELECT COUNT(DISTINCT C.Z_COORD)
-              FROM CORE_FSSC.CURATED_LOGISTICS.ILOC C
-              WHERE C.X_COORD = X_COORD
-                AND C.Y_COORD = Y_COORD
-                AND C.DC_ID = DC_ID
-                AND C.WHSE_ID = WHSE_ID
-                AND C.LEV = LEV) > 1
-        THEN 'Y'
-        ELSE 'N'
-    END AS ERR_MULTIPLE_Z_SAME_LEVEL,
-    
-    -- Overall ERROR_FLAG (Y if ANY error is flagged)
+    -- Overall error flag
     CASE
         WHEN (Z2 IS NOT NULL AND Z2 < Z1)
           OR (Z2 IS NOT NULL AND Z2 > Z1 AND (Z2 - Z1) < 6)
-          OR (Z2 IS NOT NULL AND Z2 > Z1 AND OPENING_HEIGHT IS NOT NULL
-              AND GREATEST(CSE_LEN, CSE_WID, CSE_HGT) > OPENING_HEIGHT)
-          OR (LDES_ID = 'SF'
-              AND (
-                    (CASE WHEN CSE_LEN > 24 THEN 1 ELSE 0 END)
-                  + (CASE WHEN CSE_WID > 24 THEN 1 ELSE 0 END)
-                  + (CASE WHEN CSE_HGT > 24 THEN 1 ELSE 0 END)
-                  ) >= 2)
-          OR (SELECT COUNT(DISTINCT C.Z_COORD)
-              FROM CORE_FSSC.CURATED_LOGISTICS.ILOC C
-              WHERE C.X_COORD = X_COORD
-                AND C.Y_COORD = Y_COORD
-                AND C.DC_ID = DC_ID
-                AND C.WHSE_ID = WHSE_ID
-                AND C.LEV = LEV) > 1
+          OR (Z2 IS NOT NULL AND Z2 > Z1 AND OPENING_HEIGHT IS NOT NULL AND GREATEST(CSE_LEN, CSE_WID, CSE_HGT) > OPENING_HEIGHT)
+          OR (LDES_ID = 'SF' AND ((CASE WHEN CSE_LEN > 24 THEN 1 ELSE 0 END) + (CASE WHEN CSE_WID > 24 THEN 1 ELSE 0 END) + (CASE WHEN CSE_HGT > 24 THEN 1 ELSE 0 END)) >= 2)
+          OR (SELECT COUNT(DISTINCT C.Z_COORD) FROM CORE_FSSC.CURATED_LOGISTICS.ILOC C WHERE C.X_COORD = X_COORD AND C.Y_COORD = Y_COORD AND C.DC_ID = DC_ID AND C.WHSE_ID = WHSE_ID AND C.LEV = LEV) > 1
         THEN 'Y'
         ELSE 'N'
     END AS ERROR_FLAG,
     
-    -- ERROR_DETAIL: Pipe-separated list of all errors on this row
+    -- Error detail
     TRIM(
-        CASE WHEN Z2 IS NOT NULL AND Z2 < Z1
-             THEN '|Z2 < Z1' ELSE '' END
-     || CASE WHEN Z2 IS NOT NULL AND Z2 > Z1 AND (Z2 - Z1) < 6
-             THEN '|Low Clearance' ELSE '' END
-     || CASE WHEN Z2 IS NOT NULL AND Z2 > Z1 AND OPENING_HEIGHT IS NOT NULL
-                  AND GREATEST(CSE_LEN, CSE_WID, CSE_HGT) > OPENING_HEIGHT
-             THEN '|Dim > Opening' ELSE '' END
-     || CASE WHEN LDES_ID = 'SF'
-                  AND (
-                        (CASE WHEN CSE_LEN > 24 THEN 1 ELSE 0 END)
-                      + (CASE WHEN CSE_WID > 24 THEN 1 ELSE 0 END)
-                      + (CASE WHEN CSE_HGT > 24 THEN 1 ELSE 0 END)
-                      ) >= 2
-             THEN '|SF 2 Dims > 24' ELSE '' END
-     || CASE WHEN (SELECT COUNT(DISTINCT C.Z_COORD)
-                   FROM CORE_FSSC.CURATED_LOGISTICS.ILOC C
-                   WHERE C.X_COORD = X_COORD
-                     AND C.Y_COORD = Y_COORD
-                     AND C.DC_ID = DC_ID
-                     AND C.WHSE_ID = WHSE_ID
-                     AND C.LEV = LEV) > 1
-             THEN '|Multiple Z Same Level' ELSE '' END
+        CASE WHEN Z2 IS NOT NULL AND Z2 < Z1 THEN '|Z2 < Z1' ELSE '' END
+     || CASE WHEN Z2 IS NOT NULL AND Z2 > Z1 AND (Z2 - Z1) < 6 THEN '|Low Clearance' ELSE '' END
+     || CASE WHEN Z2 IS NOT NULL AND Z2 > Z1 AND OPENING_HEIGHT IS NOT NULL AND GREATEST(CSE_LEN, CSE_WID, CSE_HGT) > OPENING_HEIGHT THEN '|Dim > Opening' ELSE '' END
+     || CASE WHEN LDES_ID = 'SF' AND ((CASE WHEN CSE_LEN > 24 THEN 1 ELSE 0 END) + (CASE WHEN CSE_WID > 24 THEN 1 ELSE 0 END) + (CASE WHEN CSE_HGT > 24 THEN 1 ELSE 0 END)) >= 2 THEN '|SF 2 Dims > 24' ELSE '' END
+     || CASE WHEN (SELECT COUNT(DISTINCT C.Z_COORD) FROM CORE_FSSC.CURATED_LOGISTICS.ILOC C WHERE C.X_COORD = X_COORD AND C.Y_COORD = Y_COORD AND C.DC_ID = DC_ID AND C.WHSE_ID = WHSE_ID AND C.LEV = LEV) > 1 THEN '|Multiple Z Same Level' ELSE '' END
     , '|') AS ERROR_DETAIL,
-
-    -- ROW_STATUS: Matches old v8 logic
+    
+    -- ROW STATUS (for Power BI filtering)
     CASE
         WHEN Z2 IS NULL THEN 'NO Z2 DATA'
         WHEN Z2 > Z1 AND (SUGGESTED_CASECAP - CASECAP) >= 0 THEN 'OPPORTUNITY'
         ELSE 'ERROR'
     END AS ROW_STATUS,
     
-    -- =====================================================
-    -- REPLENISHMENT CALCULATIONS (FLOOR - no decimals)
-    -- =====================================================
-    
+    -- Replenishment calculations
     CASE
         WHEN (CASECAP * CSE_UNIT - REPLEN_LEVEL) <= 0 THEN NULL
         WHEN ANNUAL_UNITS IS NULL THEN NULL
@@ -542,10 +483,7 @@ SELECT
         )
     END AS REPLEN_SAVED_PER_YEAR,
     
-    -- =====================================================
-    -- MARKOUT CALCULATIONS
-    -- =====================================================
-    
+    -- Markout calculations
     CASE
         WHEN (CASECAP * CSE_UNIT - REPLEN_LEVEL) <= 0 THEN NULL
         WHEN (SUGGESTED_CASECAP * CSE_UNIT - REPLEN_LEVEL) <= 0 THEN NULL
@@ -570,61 +508,18 @@ SELECT
         )
     END AS MARKOUTS_SAVED,
     
-    -- =====================================================
-    -- FLAGS
-    -- =====================================================
-    CASE
-        WHEN Z2 IS NULL THEN 'N'
-        WHEN Z2 <= Z1 THEN 'N'
-        WHEN MAX_STACK_LAYERS >= 2 THEN 'Y'
-        ELSE 'N'
-    END AS DOUBLE_STACK_FLAG,
+    -- Opportunity flags
+    CASE WHEN Z2 IS NOT NULL AND Z2 > Z1 AND MAX_STACK_LAYERS >= 2 THEN 'Y' ELSE 'N' END AS DOUBLE_STACK_FLAG,
+    CASE WHEN LDES_ID = 'FW' AND CASES_PER_LANE > CASECAP THEN 'Y' ELSE 'N' END AS DEPTH_OPP_FLAG,
     
+    -- Opportunity type
     CASE
-        WHEN LDES_ID = 'FW' AND CASES_PER_LANE > CASECAP THEN 'Y'
-        ELSE 'N'
-    END AS DEPTH_OPP_FLAG,
-    
-    -- =====================================================
-    -- OPPORTUNITY_TYPE (Micah's Categories)
-    -- =====================================================
-    CASE
-        -- SF: Underutilized Capacity
-        WHEN LDES_ID = 'SF' AND SUGGESTED_CASECAP > CASECAP
-        THEN 'SF - Underutilized Capacity'
-        
-        -- FW: Both Depth AND Stack
-        WHEN LDES_ID = 'FW' 
-            AND Z2 IS NOT NULL 
-            AND Z2 > Z1
-            AND MAX_STACK_LAYERS >= 2
-            AND CASES_PER_LANE > CASECAP
-        THEN 'FW - Both Depth/Stack'
-        
-        -- FW: DoubleStack only
-        WHEN LDES_ID = 'FW'
-            AND Z2 IS NOT NULL 
-            AND Z2 > Z1
-            AND MAX_STACK_LAYERS >= 2
-        THEN 'FW - DoubleStack'
-        
-        -- FW: Depth Underutilized only
-        WHEN LDES_ID = 'FW'
-            AND CASES_PER_LANE > CASECAP
-        THEN 'FW - Depth Underutilized'
-        
-        -- No opportunity
+        WHEN LDES_ID = 'SF' AND SUGGESTED_CASECAP > CASECAP THEN 'SF - Underutilized Capacity'
+        WHEN LDES_ID = 'FW' AND Z2 IS NOT NULL AND Z2 > Z1 AND MAX_STACK_LAYERS >= 2 AND CASES_PER_LANE > CASECAP THEN 'FW - Both Depth/Stack'
+        WHEN LDES_ID = 'FW' AND Z2 IS NOT NULL AND Z2 > Z1 AND MAX_STACK_LAYERS >= 2 THEN 'FW - DoubleStack'
+        WHEN LDES_ID = 'FW' AND CASES_PER_LANE > CASECAP THEN 'FW - Depth Underutilized'
         ELSE 'OK'
     END AS OPPORTUNITY_TYPE
 
 FROM WITH_CAPACITY
-
--- =====================================================
--- v10: NO hard filters — all rows come through
--- Use ROW_STATUS or ERROR_FLAG in Power BI to slice pages:
---   Page 2 (Front Page): ROW_STATUS = 'OPPORTUNITY'
---   Page 3 (Errors): ROW_STATUS = 'ERROR'
--- =====================================================
-ORDER BY 
-    ERROR_FLAG DESC,
-    REPLEN_SAVED_PER_YEAR DESC NULLS LAST
+ORDER BY REPLEN_SAVED_PER_YEAR DESC NULLS LAST
