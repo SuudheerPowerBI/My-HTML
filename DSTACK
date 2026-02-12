@@ -282,8 +282,11 @@ WITH_CALCS AS (
                   END
         END AS SUGGESTED_CASECAP,
         
-        -- BASE_CASECAP: Single lane, single stack (for validation)
-        FLOOR(STK_POS_DEP / NULLIF(GREATEST(CSE_LEN, CSE_WID), 0)) AS BASE_CASECAP
+        -- BASE_CASECAP: Only calculate for FW, else use CASECAP
+        CASE 
+            WHEN LDES_ID = 'FW' THEN FLOOR(STK_POS_DEP / NULLIF(GREATEST(CSE_LEN, CSE_WID), 0))
+            ELSE CASECAP
+        END AS BASE_CASECAP
         
     FROM WITH_OPENING O
 ),
@@ -506,10 +509,10 @@ SELECT
              THEN '|Multiple Z Same Level' ELSE '' END
     , '|') AS ERROR_DETAIL,
 
-    -- ROW_STATUS: Simple logic
+    -- ROW_STATUS: Matches old v8 logic
     CASE
         WHEN Z2 IS NULL THEN 'NO Z2 DATA'
-        WHEN (Z2 - Z1) >= 0 THEN 'OPPORTUNITY'
+        WHEN Z2 > Z1 AND (SUGGESTED_CASECAP - CASECAP) >= 0 THEN 'OPPORTUNITY'
         ELSE 'ERROR'
     END AS ROW_STATUS,
     
