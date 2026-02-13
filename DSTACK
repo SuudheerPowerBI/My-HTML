@@ -432,49 +432,33 @@ SELECT
         -- #4: Z for item different than other slots on same shelf (IC copy error)
         WHEN (SELECT COUNT(DISTINCT C.Z_COORD) 
               FROM CORE_FSSC.CURATED_LOGISTICS.ILOC C 
-              WHERE C.X_COORD = X_COORD 
-                AND C.Y_COORD = Y_COORD 
-                AND C.DC_ID = DC_ID 
-                AND C.WHSE_ID = WHSE_ID 
-                AND C.LEV = LEV) > 1 
+              WHERE C.X_COORD = WITH_CAPACITY.X_COORD 
+                AND C.Y_COORD = WITH_CAPACITY.Y_COORD 
+                AND C.DC_ID = WITH_CAPACITY.DC_ID 
+                AND C.WHSE_ID = WITH_CAPACITY.WHSE_ID 
+                AND C.LEV = WITH_CAPACITY.LEV) > 1 
         THEN 'Different Z Same Shelf'
         
         -- #3: LEV vs Z doesn't match (higher LEV should have higher Z)
-        WHEN Z1 <= (SELECT MAX(C.Z_COORD) 
+        WHEN WITH_CAPACITY.Z1 <= (SELECT MAX(C.Z_COORD) 
                     FROM CORE_FSSC.CURATED_LOGISTICS.ILOC C 
-                    WHERE C.X_COORD = X_COORD 
-                      AND C.Y_COORD = Y_COORD 
-                      AND C.DC_ID = DC_ID 
-                      AND C.WHSE_ID = WHSE_ID 
-                      AND C.LEV = LEV - 1) 
+                    WHERE C.X_COORD = WITH_CAPACITY.X_COORD 
+                      AND C.Y_COORD = WITH_CAPACITY.Y_COORD 
+                      AND C.DC_ID = WITH_CAPACITY.DC_ID 
+                      AND C.WHSE_ID = WITH_CAPACITY.WHSE_ID 
+                      AND C.LEV = WITH_CAPACITY.LEV - 1) 
         THEN 'LEV vs Z Mismatch'
         
         -- #1: Low clearance
-        WHEN Z2 IS NOT NULL AND Z2 > Z1 AND (Z2 - Z1) < 6 
+        WHEN WITH_CAPACITY.Z2 IS NOT NULL AND WITH_CAPACITY.Z2 > WITH_CAPACITY.Z1 AND (WITH_CAPACITY.Z2 - WITH_CAPACITY.Z1) < 6 
         THEN 'Low Clearance'
         
         -- #2: Product height vs slot opening
-        WHEN OPENING_HEIGHT IS NOT NULL AND CSE_HGT > OPENING_HEIGHT 
+        WHEN WITH_CAPACITY.OPENING_HEIGHT IS NOT NULL AND WITH_CAPACITY.CSE_HGT > WITH_CAPACITY.OPENING_HEIGHT 
         THEN 'Case Height > Opening'
         
-        -- #5: Product opening different from other products on same shelf
-        WHEN (SELECT COUNT(DISTINCT C2.Z_COORD - C1.Z_COORD)
-              FROM CORE_FSSC.CURATED_LOGISTICS.ILOC C1
-              JOIN CORE_FSSC.CURATED_LOGISTICS.ILOC C2
-                ON C1.X_COORD = C2.X_COORD
-                AND C1.Y_COORD = C2.Y_COORD
-                AND C1.DC_ID = C2.DC_ID
-                AND C1.WHSE_ID = C2.WHSE_ID
-                AND C1.LEV = C2.LEV - 1
-              WHERE C1.X_COORD = X_COORD 
-                AND C1.Y_COORD = Y_COORD 
-                AND C1.DC_ID = DC_ID 
-                AND C1.WHSE_ID = WHSE_ID 
-                AND C1.LEV = LEV) > 1
-        THEN 'Different Opening Same Shelf'
-        
         -- SF with 2 dims > 24"
-        WHEN LDES_ID = 'SF' AND ((CASE WHEN CSE_LEN > 24 THEN 1 ELSE 0 END) + (CASE WHEN CSE_WID > 24 THEN 1 ELSE 0 END) + (CASE WHEN CSE_HGT > 24 THEN 1 ELSE 0 END)) >= 2 
+        WHEN WITH_CAPACITY.LDES_ID = 'SF' AND ((CASE WHEN WITH_CAPACITY.CSE_LEN > 24 THEN 1 ELSE 0 END) + (CASE WHEN WITH_CAPACITY.CSE_WID > 24 THEN 1 ELSE 0 END) + (CASE WHEN WITH_CAPACITY.CSE_HGT > 24 THEN 1 ELSE 0 END)) >= 2 
         THEN 'SF 2 Dims > 24'
         
         ELSE 'OK'
@@ -484,25 +468,25 @@ SELECT
     TRIM(
         CASE WHEN (SELECT COUNT(DISTINCT C.Z_COORD) 
                    FROM CORE_FSSC.CURATED_LOGISTICS.ILOC C 
-                   WHERE C.X_COORD = X_COORD 
-                     AND C.Y_COORD = Y_COORD 
-                     AND C.DC_ID = DC_ID 
-                     AND C.WHSE_ID = WHSE_ID 
-                     AND C.LEV = LEV) > 1 
+                   WHERE C.X_COORD = WITH_CAPACITY.X_COORD 
+                     AND C.Y_COORD = WITH_CAPACITY.Y_COORD 
+                     AND C.DC_ID = WITH_CAPACITY.DC_ID 
+                     AND C.WHSE_ID = WITH_CAPACITY.WHSE_ID 
+                     AND C.LEV = WITH_CAPACITY.LEV) > 1 
              THEN '|Different Z Same Shelf' ELSE '' END
-     || CASE WHEN Z1 <= (SELECT MAX(C.Z_COORD) 
+     || CASE WHEN WITH_CAPACITY.Z1 <= (SELECT MAX(C.Z_COORD) 
                          FROM CORE_FSSC.CURATED_LOGISTICS.ILOC C 
-                         WHERE C.X_COORD = X_COORD 
-                           AND C.Y_COORD = Y_COORD 
-                           AND C.DC_ID = DC_ID 
-                           AND C.WHSE_ID = WHSE_ID 
-                           AND C.LEV = LEV - 1) 
+                         WHERE C.X_COORD = WITH_CAPACITY.X_COORD 
+                           AND C.Y_COORD = WITH_CAPACITY.Y_COORD 
+                           AND C.DC_ID = WITH_CAPACITY.DC_ID 
+                           AND C.WHSE_ID = WITH_CAPACITY.WHSE_ID 
+                           AND C.LEV = WITH_CAPACITY.LEV - 1) 
              THEN '|LEV vs Z Mismatch' ELSE '' END
-     || CASE WHEN Z2 IS NOT NULL AND Z2 > Z1 AND (Z2 - Z1) < 6 
+     || CASE WHEN WITH_CAPACITY.Z2 IS NOT NULL AND WITH_CAPACITY.Z2 > WITH_CAPACITY.Z1 AND (WITH_CAPACITY.Z2 - WITH_CAPACITY.Z1) < 6 
              THEN '|Low Clearance' ELSE '' END
-     || CASE WHEN OPENING_HEIGHT IS NOT NULL AND CSE_HGT > OPENING_HEIGHT 
+     || CASE WHEN WITH_CAPACITY.OPENING_HEIGHT IS NOT NULL AND WITH_CAPACITY.CSE_HGT > WITH_CAPACITY.OPENING_HEIGHT 
              THEN '|Case Height > Opening' ELSE '' END
-     || CASE WHEN LDES_ID = 'SF' AND ((CASE WHEN CSE_LEN > 24 THEN 1 ELSE 0 END) + (CASE WHEN CSE_WID > 24 THEN 1 ELSE 0 END) + (CASE WHEN CSE_HGT > 24 THEN 1 ELSE 0 END)) >= 2 
+     || CASE WHEN WITH_CAPACITY.LDES_ID = 'SF' AND ((CASE WHEN WITH_CAPACITY.CSE_LEN > 24 THEN 1 ELSE 0 END) + (CASE WHEN WITH_CAPACITY.CSE_WID > 24 THEN 1 ELSE 0 END) + (CASE WHEN WITH_CAPACITY.CSE_HGT > 24 THEN 1 ELSE 0 END)) >= 2 
              THEN '|SF 2 Dims > 24' ELSE '' END
     , '|') AS ERROR_DETAIL,
     
