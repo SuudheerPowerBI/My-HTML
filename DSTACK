@@ -440,7 +440,7 @@ SELECT
                 AND C.DC_ID = WITH_CAPACITY.DC_ID 
                 AND C.WHSE_ID = WITH_CAPACITY.WHSE_ID 
                 AND C.LEV = WITH_CAPACITY.LEV) > 1 
-        THEN 'Different Z Same Shelf'
+        THEN 'Diff Z'
         
         -- #3: LEV vs Z doesn't match (higher LEV should have higher Z)
         WHEN WITH_CAPACITY.Z1 <= (SELECT MAX(C.Z_COORD) 
@@ -450,48 +450,53 @@ SELECT
                       AND C.DC_ID = WITH_CAPACITY.DC_ID 
                       AND C.WHSE_ID = WITH_CAPACITY.WHSE_ID 
                       AND C.LEV = WITH_CAPACITY.LEV - 1) 
-        THEN 'LEV vs Z Mismatch'
+        THEN 'LEV/Z'
         
         -- #1: Low clearance
         WHEN WITH_CAPACITY.Z2 IS NOT NULL AND WITH_CAPACITY.Z2 > WITH_CAPACITY.Z1 AND (WITH_CAPACITY.Z2 - WITH_CAPACITY.Z1) < 6 
-        THEN 'Low Clearance'
+        THEN 'Low Clr'
         
         -- #2: Product height vs slot opening
         WHEN WITH_CAPACITY.OPENING_HEIGHT IS NOT NULL AND WITH_CAPACITY.CSE_HGT > WITH_CAPACITY.OPENING_HEIGHT 
-        THEN 'Case Height > Opening'
+        THEN 'Ht>Open'
         
         -- SF with 2 dims > 24"
         WHEN WITH_CAPACITY.LDES_ID = 'SF' AND ((CASE WHEN WITH_CAPACITY.CSE_LEN > 24 THEN 1 ELSE 0 END) + (CASE WHEN WITH_CAPACITY.CSE_WID > 24 THEN 1 ELSE 0 END) + (CASE WHEN WITH_CAPACITY.CSE_HGT > 24 THEN 1 ELSE 0 END)) >= 2 
-        THEN 'SF 2 Dims > 24'
+        THEN 'SF>24'
         
         ELSE 'OK'
     END AS ERROR_TYPE,
     
-    -- ERROR_DETAIL (all errors pipe-separated for detail table)
-    TRIM(
-        CASE WHEN (SELECT COUNT(DISTINCT C.Z_COORD) 
-                   FROM CORE_FSSC.CURATED_LOGISTICS.ILOC C 
-                   WHERE C.X_COORD = WITH_CAPACITY.X_COORD 
-                     AND C.Y_COORD = WITH_CAPACITY.Y_COORD 
-                     AND C.DC_ID = WITH_CAPACITY.DC_ID 
-                     AND C.WHSE_ID = WITH_CAPACITY.WHSE_ID 
-                     AND C.LEV = WITH_CAPACITY.LEV) > 1 
-             THEN '|Different Z Same Shelf' ELSE '' END
-     || CASE WHEN WITH_CAPACITY.Z1 <= (SELECT MAX(C.Z_COORD) 
-                         FROM CORE_FSSC.CURATED_LOGISTICS.ILOC C 
-                         WHERE C.X_COORD = WITH_CAPACITY.X_COORD 
-                           AND C.Y_COORD = WITH_CAPACITY.Y_COORD 
-                           AND C.DC_ID = WITH_CAPACITY.DC_ID 
-                           AND C.WHSE_ID = WITH_CAPACITY.WHSE_ID 
-                           AND C.LEV = WITH_CAPACITY.LEV - 1) 
-             THEN '|LEV vs Z Mismatch' ELSE '' END
-     || CASE WHEN WITH_CAPACITY.Z2 IS NOT NULL AND WITH_CAPACITY.Z2 > WITH_CAPACITY.Z1 AND (WITH_CAPACITY.Z2 - WITH_CAPACITY.Z1) < 6 
-             THEN '|Low Clearance' ELSE '' END
-     || CASE WHEN WITH_CAPACITY.OPENING_HEIGHT IS NOT NULL AND WITH_CAPACITY.CSE_HGT > WITH_CAPACITY.OPENING_HEIGHT 
-             THEN '|Case Height > Opening' ELSE '' END
-     || CASE WHEN WITH_CAPACITY.LDES_ID = 'SF' AND ((CASE WHEN WITH_CAPACITY.CSE_LEN > 24 THEN 1 ELSE 0 END) + (CASE WHEN WITH_CAPACITY.CSE_WID > 24 THEN 1 ELSE 0 END) + (CASE WHEN WITH_CAPACITY.CSE_HGT > 24 THEN 1 ELSE 0 END)) >= 2 
-             THEN '|SF 2 Dims > 24' ELSE '' END
-    , '|') AS ERROR_DETAIL,
+    -- ERROR_LIST (all errors comma-separated using short codes)
+    ARRAY_TO_STRING(
+        ARRAY_COMPACT(
+            ARRAY_CONSTRUCT(
+                CASE WHEN (SELECT COUNT(DISTINCT C.Z_COORD) 
+                           FROM CORE_FSSC.CURATED_LOGISTICS.ILOC C 
+                           WHERE C.X_COORD = WITH_CAPACITY.X_COORD 
+                             AND C.Y_COORD = WITH_CAPACITY.Y_COORD 
+                             AND C.DC_ID = WITH_CAPACITY.DC_ID 
+                             AND C.WHSE_ID = WITH_CAPACITY.WHSE_ID 
+                             AND C.LEV = WITH_CAPACITY.LEV) > 1 
+                     THEN 'Diff Z' ELSE NULL END,
+                CASE WHEN WITH_CAPACITY.Z1 <= (SELECT MAX(C.Z_COORD) 
+                                               FROM CORE_FSSC.CURATED_LOGISTICS.ILOC C 
+                                               WHERE C.X_COORD = WITH_CAPACITY.X_COORD 
+                                                 AND C.Y_COORD = WITH_CAPACITY.Y_COORD 
+                                                 AND C.DC_ID = WITH_CAPACITY.DC_ID 
+                                                 AND C.WHSE_ID = WITH_CAPACITY.WHSE_ID 
+                                                 AND C.LEV = WITH_CAPACITY.LEV - 1) 
+                     THEN 'LEV/Z' ELSE NULL END,
+                CASE WHEN WITH_CAPACITY.Z2 IS NOT NULL AND WITH_CAPACITY.Z2 > WITH_CAPACITY.Z1 AND (WITH_CAPACITY.Z2 - WITH_CAPACITY.Z1) < 6 
+                     THEN 'Low Clr' ELSE NULL END,
+                CASE WHEN WITH_CAPACITY.OPENING_HEIGHT IS NOT NULL AND WITH_CAPACITY.CSE_HGT > WITH_CAPACITY.OPENING_HEIGHT 
+                     THEN 'Ht>Open' ELSE NULL END,
+                CASE WHEN WITH_CAPACITY.LDES_ID = 'SF' AND ((CASE WHEN WITH_CAPACITY.CSE_LEN > 24 THEN 1 ELSE 0 END) + (CASE WHEN WITH_CAPACITY.CSE_WID > 24 THEN 1 ELSE 0 END) + (CASE WHEN WITH_CAPACITY.CSE_HGT > 24 THEN 1 ELSE 0 END)) >= 2 
+                     THEN 'SF>24' ELSE NULL END
+            )
+        ),
+        ', '
+    ) AS ERROR_LIST,
     
     -- ROW STATUS (for Power BI filtering)
     CASE
