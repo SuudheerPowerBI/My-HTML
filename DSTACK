@@ -218,8 +218,11 @@ WITH_OPENING AS (
         CASE
             WHEN Z2 IS NULL THEN NULL
             WHEN Z2 <= Z1 THEN NULL
-            WHEN LDES_ID = 'FW' THEN Z2 - Z1 - 6   -- 6" for beam/pallet
-            WHEN LDES_ID = 'SF' THEN Z2 - Z1 - 2   -- 2" for shelf
+            WHEN LDES_ID = 'FW' AND (Z2 - Z1 - 6) < 0 THEN NULL
+            WHEN LDES_ID = 'SF' AND (Z2 - Z1 - 2) < 0 THEN NULL
+            WHEN LDES_ID = 'FW' THEN Z2 - Z1 - 6
+            WHEN LDES_ID = 'SF' THEN Z2 - Z1 - 2
+            WHEN (Z2 - Z1 - 6) < 0 THEN NULL
             ELSE Z2 - Z1 - 6
         END AS OPENING_HEIGHT
     FROM WITH_Z2 W
