@@ -1,26 +1,31 @@
 SELECT
-    invd.DC_ID,          -- ← from filtered table
-    invd.WHSE_ID,        -- ← from filtered table
+    invd.DC_ID,
+    invd.WHSE_ID,
     TRIM(plas.PROD_ID) AS PRODID,
-    
-    MAX(CASE WHEN plas.LCUS_ID = 'P' THEN plas.LOC_ID END) AS PrimaryLoc,
-    MAX(CASE WHEN plas.LCUS_ID = 'A' THEN plas.LOC_ID END) AS AlternateLoc,
-    
-    SUM(CASE WHEN invd.INV_POS_CAT = 'P' THEN invd.PROD_QTY ELSE 0 END) AS PRIMARY_BOH,
-    SUM(CASE WHEN invd.INV_POS_CAT = 'R' THEN invd.PROD_QTY ELSE 0 END) AS RESERVE_BOH,
-    SUM(invd.PROD_QTY) AS TOTAL_BOH,
-    
-    COUNT(DISTINCT CASE WHEN invd.INV_POS_CAT = 'R' 
-          THEN invd.LIC_PLT_ID END) AS RESERVE_LPN_COUNT,
-    
-    MAX(invd.RECEIPT_DTIM) AS LAST_RECEIPT
+
+    -- Location assignments
+    MAX(CASE WHEN plas.LCUS_ID = 'P' THEN plas.LOC_ID END)  AS PrimaryLoc,
+    MAX(CASE WHEN plas.LCUS_ID = 'A' THEN plas.LOC_ID END)  AS AlternateLoc,
+
+    -- BOH split by location assignment
+    SUM(CASE WHEN plas.LCUS_ID = 'P'
+        THEN invd.PROD_QTY ELSE 0 END)                      AS PRIMARY_BOH,
+    SUM(CASE WHEN plas.LCUS_ID = 'A'
+        THEN invd.PROD_QTY ELSE 0 END)                      AS ALTERNATE_BOH,
+    SUM(CASE WHEN invd.INV_POS_CAT = 'R'
+        THEN invd.PROD_QTY ELSE 0 END)                      AS RESERVE_BOH,
+    SUM(invd.PROD_QTY)                                       AS TOTAL_BOH,
+
+    COUNT(DISTINCT CASE WHEN invd.INV_POS_CAT = 'R'
+        THEN invd.LIC_PLT_ID END)                            AS RESERVE_LPN_COUNT,
+
+    MAX(invd.RECEIPT_DTIM)                                   AS LAST_RECEIPT
 
 FROM CORE_FSSC.CURATED_LOGISTICS.IINVD invd
 LEFT JOIN CORE_FSSC.CURATED_LOGISTICS.IPLAS plas
     ON plas.PLAS_ID  = invd.PLAS_ID
     AND plas.DC_ID   = invd.DC_ID
     AND plas.WHSE_ID = invd.WHSE_ID
-
 WHERE invd.ISTA_ID = 'A'
     AND invd.DC_ID = 6
     AND invd.WHSE_ID = 2
