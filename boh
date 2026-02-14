@@ -1,0 +1,28 @@
+SELECT
+    plas.DC_ID,
+    plas.WHSE_ID,
+    TRIM(plas.PROD_ID) AS PRODID,
+    
+    -- Location assignments
+    MAX(CASE WHEN plas.LCUS_ID = 'P' THEN plas.LOC_ID END) AS PrimaryLoc,
+    MAX(CASE WHEN plas.LCUS_ID = 'A' THEN plas.LOC_ID END) AS AlternateLoc,
+    
+    -- BOH split by location type
+    SUM(CASE WHEN invd.INV_POS_CAT = 'P' THEN invd.PROD_QTY ELSE 0 END) AS PRIMARY_BOH,
+    SUM(CASE WHEN invd.INV_POS_CAT = 'R' THEN invd.PROD_QTY ELSE 0 END) AS RESERVE_BOH,
+    SUM(invd.PROD_QTY) AS TOTAL_BOH,
+    
+    -- Reserve LPN count (how many pallets in reserve?)
+    COUNT(DISTINCT CASE WHEN invd.INV_POS_CAT = 'R' 
+          THEN invd.LIC_PLT_ID END) AS RESERVE_LPN_COUNT,
+    
+    -- Dates
+    MAX(invd.RECEIPT_DTIM) AS LAST_RECEIPT
+
+FROM CORE_FSSC.CURATED_LOGISTICS.IINVD invd
+LEFT JOIN CORE_FSSC.CURATED_LOGISTICS.IPLAS plas
+    ON plas.PLAS_ID = invd.PLAS_ID
+WHERE invd.ISTA_ID = 'A'
+    AND invd.DC_ID = 6
+    AND invd.WHSE_ID = 2
+GROUP BY ALL
