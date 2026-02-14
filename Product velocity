@@ -1,27 +1,24 @@
 -- ============================================================
--- INVENTORY OPTIMIZATION - UNIFIED QUERY (SNOWFLAKE) v4
+-- INVENTORY OPTIMIZATION - UNIFIED QUERY (SNOWFLAKE) v4 FINAL
 -- One row per DC + SKU with ALL metrics
 -- Schema: CORE_FSSC.CURATED_LOGISTICS
 -- ============================================================
--- Tables: IPLAS, ILOC, IPRDD, IPROD, IINVD, ASELD,
---         jda_dc_ob_prior_sku (Blue Yonder forecast)
+-- Tables: IPLAS, ILOC, IPRDD, IPROD, IINVD, ASELD, FSELC,
+--         IORD, IORDD, jda_dc_ob_prior_sku (Blue Yonder)
 -- Author: Sudheer
 -- Date: February 2026
 -- ============================================================
--- Changes v4:
---   - Added Blue Yonder inbound forecast (next 14 days)
---   - Added LUIS_ID (C/E/I pick type)
---   - Added RepLevCse (replen level in cases)
---   - Smarter ACTION_FLAG considers inbound forecast
---   - Excludes returns and transfers from demand
+-- Velocity approach:
+--   ASELD = Shipped velocity (what left the building) → DOS, HOS
+--   IORD  = Demand velocity (what stores ordered)    → True demand
+--   Gap   = Demand - Shipped                         → Fill rate
 -- ============================================================
 
 WITH
 
 -- ============================================================
 -- 1) FULL PICK HISTORY: Last bill date (no date cap)
---    Weekday only (Mon-Fri), no JCFN filter
---    Excludes returns and transfers
+--    Weekday only (Mon-Fri), excl returns/transfers
 -- ============================================================
 PICK_HISTORY AS (
     SELECT
@@ -36,10 +33,10 @@ PICK_HISTORY AS (
 ),
 
 -- ============================================================
--- 2) VELOCITY: Last 4 weeks (primary for DOS/HOS)
+-- 2) SHIPPED VELOCITY: Last 4 weeks (ASELD)
 --    Weekday only, distinct pick days, excl returns/transfers
 -- ============================================================
-VELOCITY_4W AS (
+SHIPPED_4W AS (
     SELECT
         DC_ID,
         WHSE_ID,
@@ -48,7 +45,7 @@ VELOCITY_4W AS (
         COUNT(DISTINCT TRUNC(CREATE_DTIM, 'DAY'))            AS DISTINCT_PICK_DAYS_4W,
         ROUND(SUM(PROD_QTY)
               / NULLIF(COUNT(DISTINCT TRUNC(CREATE_DTIM, 'DAY')), 0), 2)
-                                                             AS DAILY_VELOCITY_4W,
+                                                             AS DAILY_SHIPPED_4W,
         ROUND(SUM(PROD_QTY) / 4, 2)                          AS SHIPPED_PER_WEEK_4W
     FROM CORE_FSSC.CURATED_LOGISTICS.ASELD
     WHERE CREATE_DTIM >= DATEADD(WEEK, -4, CURRENT_DATE())
@@ -58,10 +55,10 @@ VELOCITY_4W AS (
 ),
 
 -- ============================================================
--- 3) VELOCITY: Last 13 weeks (baseline/trend comparison)
+-- 3) SHIPPED VELOCITY: Last 13 weeks (ASELD)
 --    Weekday only, distinct pick days, excl returns/transfers
 -- ============================================================
-VELOCITY_13W AS (
+SHIPPED_13W AS (
     SELECT
         DC_ID,
         WHSE_ID,
@@ -70,7 +67,7 @@ VELOCITY_13W AS (
         COUNT(DISTINCT TRUNC(CREATE_DTIM, 'DAY'))            AS DISTINCT_PICK_DAYS_13W,
         ROUND(SUM(PROD_QTY)
               / NULLIF(COUNT(DISTINCT TRUNC(CREATE_DTIM, 'DAY')), 0), 2)
-                                                             AS DAILY_VELOCITY_13W,
+                                                             AS DAILY_SHIPPED_13W,
         ROUND(SUM(PROD_QTY) / 13, 2)                         AS SHIPPED_PER_WEEK_13W
     FROM CORE_FSSC.CURATED_LOGISTICS.ASELD
     WHERE CREATE_DTIM >= DATEADD(WEEK, -13, CURRENT_DATE())
@@ -80,7 +77,50 @@ VELOCITY_13W AS (
 ),
 
 -- ============================================================
--- 4) INVENTORY: BOH split by location type
+-- 4) DEMAND VELOCITY: Last 4 weeks (IORD/IORDD)
+--    What stores actually ordered, excl returns/transfers
+-- ============================================================
+DEMAND_4W AS (
+    SELECT
+        A.DC_ID,
+        A.WHSE_ID,
+        B.PROD_ID                                            AS SKU_NBR,
+        SUM(B.ORD_QTY)                                       AS TOTAL_DEMAND_4W,
+        ROUND(SUM(B.ORD_QTY) / 4, 2)                         AS DEMAND_PER_WEEK_4W
+    FROM CORE_FSSC.CURATED_LOGISTICS.IORD A
+    JOIN CORE_FSSC.CURATED_LOGISTICS.IORDD B
+        ON A.DC_ID    = B.DC_ID
+        AND A.ORD_ID  = B.ORD_ID
+        AND A.WHSE_ID = B.WHSE_ID
+        AND A.SGMT_ID = B.SGMT_ID
+    WHERE A.CREATE_DTIM >= DATEADD(WEEK, -4, CURRENT_DATE())
+      AND A.ORDER_TYPE_ID NOT IN ('RET', 'TRN')
+    GROUP BY A.DC_ID, A.WHSE_ID, B.PROD_ID
+),
+
+-- ============================================================
+-- 5) DEMAND VELOCITY: Last 13 weeks (IORD/IORDD)
+-- ============================================================
+DEMAND_13W AS (
+    SELECT
+        A.DC_ID,
+        A.WHSE_ID,
+        B.PROD_ID                                            AS SKU_NBR,
+        SUM(B.ORD_QTY)                                       AS TOTAL_DEMAND_13W,
+        ROUND(SUM(B.ORD_QTY) / 13, 2)                        AS DEMAND_PER_WEEK_13W
+    FROM CORE_FSSC.CURATED_LOGISTICS.IORD A
+    JOIN CORE_FSSC.CURATED_LOGISTICS.IORDD B
+        ON A.DC_ID    = B.DC_ID
+        AND A.ORD_ID  = B.ORD_ID
+        AND A.WHSE_ID = B.WHSE_ID
+        AND A.SGMT_ID = B.SGMT_ID
+    WHERE A.CREATE_DTIM >= DATEADD(WEEK, -13, CURRENT_DATE())
+      AND A.ORDER_TYPE_ID NOT IN ('RET', 'TRN')
+    GROUP BY A.DC_ID, A.WHSE_ID, B.PROD_ID
+),
+
+-- ============================================================
+-- 6) INVENTORY: BOH split by location type
 --    Aggregated by PROD_ID + DC_ID + WHSE_ID
 -- ============================================================
 INVENTORY AS (
@@ -97,7 +137,7 @@ INVENTORY AS (
         MAX(CASE WHEN PLAS.LCUS_ID NOT IN ('P','A')
             THEN 'DR' END)                                   AS RESERVE_LOC,
 
-        -- BOH split by location assignment
+        -- BOH split
         SUM(CASE WHEN PLAS.LCUS_ID = 'P'
             THEN INVD.PROD_QTY ELSE 0 END)                  AS PRIMARY_BOH,
         SUM(CASE WHEN PLAS.LCUS_ID = 'A'
@@ -124,7 +164,7 @@ INVENTORY AS (
 ),
 
 -- ============================================================
--- 5) BLUE YONDER FORECAST: Next 14 days inbound
+-- 7) BLUE YONDER FORECAST: Next 14 days inbound
 -- ============================================================
 BY_FORECAST AS (
     SELECT
@@ -201,6 +241,7 @@ SELECT
 
     -- ===================== LOCATIONS =====================
     PL.LOC_ID                                              AS PICK_SLOT,
+    SEC.SECT_ID                                            AS SECTION,
     INV.ALTERNATE_LOC,
     INV.RESERVE_LOC,
 
@@ -209,7 +250,7 @@ SELECT
     PL.LOC_RPLN_LVL_UOI                                    AS REPLEN_LEVEL,
     LOC.LEV                                                AS SLOT_LEVEL,
     LOC.LDES_ID                                            AS LOCATION_TYPE,
-    PL.LUIS_ID,                                            -- C/E/I pick type
+    PL.LUIS_ID,
 
     -- ===================== CASE DIMENSIONS =====================
     D.CSE_HGT,
@@ -218,6 +259,9 @@ SELECT
     D.CSE_CUB,
     D.CSE_WGT,
     D.CSE_UNIT,
+    COALESCE(D.STOR_TI, 0)                                 AS TI,
+    COALESCE(D.STOR_HI, 0)                                 AS HI,
+    COALESCE(D.EACHES_CUB, 0)                              AS EACHES_CUB,
 
     -- ===================== SHELF CAPACITY =====================
     PL.LOC_STOR_CSE_CAP                                    AS SHELF_CAP_CASES,
@@ -250,44 +294,65 @@ SELECT
     ROUND(COALESCE(INV.TOTAL_BOH, 0) * COALESCE(PR.UNIT_COST, 0), 2)
                                                            AS INVENTORY_VALUE,
 
-    -- ===================== SLOT UTILIZATION (decimal) =====================
+    -- ===================== SHIPPED VELOCITY (4W - ASELD) =====================
+    COALESCE(S4.TOTAL_SHIPPED_4W, 0)                       AS TOTAL_SHIPPED_4W,
+    COALESCE(S4.SHIPPED_PER_WEEK_4W, 0)                    AS SHIPPED_PER_WEEK_4W,
+    COALESCE(S4.DAILY_SHIPPED_4W, 0)                       AS DAILY_SHIPPED_4W,
+    COALESCE(S4.DISTINCT_PICK_DAYS_4W, 0)                  AS ACTIVE_PICK_DAYS_4W,
+
+    -- ===================== SHIPPED VELOCITY (13W - ASELD) =====================
+    COALESCE(S13.TOTAL_SHIPPED_13W, 0)                     AS TOTAL_SHIPPED_13W,
+    COALESCE(S13.SHIPPED_PER_WEEK_13W, 0)                  AS SHIPPED_PER_WEEK_13W,
+    COALESCE(S13.DAILY_SHIPPED_13W, 0)                     AS DAILY_SHIPPED_13W,
+    COALESCE(S13.DISTINCT_PICK_DAYS_13W, 0)                AS ACTIVE_PICK_DAYS_13W,
+
+    -- ===================== DEMAND VELOCITY (4W - IORD) =====================
+    COALESCE(D4.TOTAL_DEMAND_4W, 0)                        AS TOTAL_DEMAND_4W,
+    COALESCE(D4.DEMAND_PER_WEEK_4W, 0)                     AS DEMAND_PER_WEEK_4W,
+
+    -- ===================== DEMAND VELOCITY (13W - IORD) =====================
+    COALESCE(D13.TOTAL_DEMAND_13W, 0)                      AS TOTAL_DEMAND_13W,
+    COALESCE(D13.DEMAND_PER_WEEK_13W, 0)                   AS DEMAND_PER_WEEK_13W,
+
+    -- ===================== FILL RATE (Shipped / Demand) =====================
     CASE
-        WHEN PL.LOC_STOR_CSE_CAP > 0
-        THEN ROUND(COALESCE(INV.PRIMARY_BOH, 0)
-                   / PL.LOC_STOR_CSE_CAP, 4)
-        ELSE 0
-    END                                                    AS SLOT_UTIL_PCT,
+        WHEN COALESCE(D4.TOTAL_DEMAND_4W, 0) = 0           THEN NULL
+        ELSE ROUND(COALESCE(S4.TOTAL_SHIPPED_4W, 0)
+                   / D4.TOTAL_DEMAND_4W, 4)
+    END                                                    AS FILL_RATE_4W,
 
     CASE
-        WHEN PL.LOC_STOR_CSE_CAP = 0                      THEN 'NO CAPACITY SET'
-        WHEN COALESCE(INV.PRIMARY_BOH, 0) = 0              THEN 'EMPTY SLOT'
-        WHEN COALESCE(INV.PRIMARY_BOH, 0)
-             <= COALESCE(PL.LOC_RPLN_LVL_UOI, 0)          THEN 'BELOW REPLEN LEVEL'
-        WHEN COALESCE(INV.PRIMARY_BOH, 0) * 1.0
-             / PL.LOC_STOR_CSE_CAP < 0.25                  THEN 'LOW'
-        WHEN COALESCE(INV.PRIMARY_BOH, 0) * 1.0
-             / PL.LOC_STOR_CSE_CAP BETWEEN 0.25 AND 0.75  THEN 'NORMAL'
-        ELSE 'HIGH'
-    END                                                    AS UTIL_STATUS,
+        WHEN COALESCE(D13.TOTAL_DEMAND_13W, 0) = 0         THEN NULL
+        ELSE ROUND(COALESCE(S13.TOTAL_SHIPPED_13W, 0)
+                   / D13.TOTAL_DEMAND_13W, 4)
+    END                                                    AS FILL_RATE_13W,
 
-    -- ===================== VELOCITY (4 WEEK) =====================
-    COALESCE(V4.TOTAL_SHIPPED_4W, 0)                       AS TOTAL_SHIPPED_4W,
-    COALESCE(V4.SHIPPED_PER_WEEK_4W, 0)                    AS SHIPPED_PER_WEEK_4W,
-    COALESCE(V4.DAILY_VELOCITY_4W, 0)                      AS DAILY_VELOCITY_4W,
-    COALESCE(V4.DISTINCT_PICK_DAYS_4W, 0)                  AS ACTIVE_PICK_DAYS_4W,
+    -- ===================== DEMAND vs SHIPPED GAP =====================
+    COALESCE(D4.TOTAL_DEMAND_4W, 0)
+        - COALESCE(S4.TOTAL_SHIPPED_4W, 0)                 AS UNFULFILLED_4W,
 
-    -- ===================== VELOCITY (13 WEEK) =====================
-    COALESCE(V13.TOTAL_SHIPPED_13W, 0)                     AS TOTAL_SHIPPED_13W,
-    COALESCE(V13.SHIPPED_PER_WEEK_13W, 0)                  AS SHIPPED_PER_WEEK_13W,
-    COALESCE(V13.DAILY_VELOCITY_13W, 0)                    AS DAILY_VELOCITY_13W,
-    COALESCE(V13.DISTINCT_PICK_DAYS_13W, 0)                AS ACTIVE_PICK_DAYS_13W,
+    COALESCE(D13.TOTAL_DEMAND_13W, 0)
+        - COALESCE(S13.TOTAL_SHIPPED_13W, 0)               AS UNFULFILLED_13W,
 
-    -- ===================== VELOCITY TREND =====================
+    -- ===================== SHIPPED VELOCITY TREND =====================
     CASE
-        WHEN COALESCE(V13.SHIPPED_PER_WEEK_13W, 0) = 0    THEN NULL
-        ELSE ROUND(COALESCE(V4.SHIPPED_PER_WEEK_4W, 0)
-                   / V13.SHIPPED_PER_WEEK_13W, 2)
+        WHEN COALESCE(S13.SHIPPED_PER_WEEK_13W, 0) = 0    THEN NULL
+        ELSE ROUND(COALESCE(S4.SHIPPED_PER_WEEK_4W, 0)
+                   / S13.SHIPPED_PER_WEEK_13W, 2)
     END                                                    AS VELOCITY_TREND_RATIO,
+
+    CASE
+        WHEN COALESCE(S13.SHIPPED_PER_WEEK_13W, 0) = 0    THEN 'NO HISTORY'
+        WHEN COALESCE(S4.SHIPPED_PER_WEEK_4W, 0)
+             / S13.SHIPPED_PER_WEEK_13W > 1.5              THEN 'STRONG UP'
+        WHEN COALESCE(S4.SHIPPED_PER_WEEK_4W, 0)
+             / S13.SHIPPED_PER_WEEK_13W > 1.1              THEN 'UP'
+        WHEN COALESCE(S4.SHIPPED_PER_WEEK_4W, 0)
+             / S13.SHIPPED_PER_WEEK_13W >= 0.9             THEN 'STABLE'
+        WHEN COALESCE(S4.SHIPPED_PER_WEEK_4W, 0)
+             / S13.SHIPPED_PER_WEEK_13W >= 0.5             THEN 'DOWN'
+        ELSE 'STRONG DOWN'
+    END                                                    AS VELOCITY_TREND,
 
     -- ===================== LAST BILL DATE =====================
     PH.LAST_BILL_DATE,
@@ -296,65 +361,36 @@ SELECT
     DATEDIFF('MONTH', PH.LAST_BILL_DATE, CURRENT_DATE())
                                                            AS LAST_BILL_MONTHS,
 
-    -- ===================== BLUE YONDER INBOUND (next 14 days) =====================
+    -- ===================== BLUE YONDER INBOUND =====================
     COALESCE(BYF.INCOMING_PCS_14D, 0)                      AS INCOMING_PCS_14D,
     COALESCE(BYF.INCOMING_CASES_14D, 0)                    AS INCOMING_CASES_14D,
     COALESCE(BYF.INCOMING_ORDER_QTY_14D, 0)                AS INCOMING_ORDER_QTY_14D,
     BYF.EARLIEST_INBOUND_DT,
     BYF.LATEST_INBOUND_DT,
 
-    -- ===================== DAYS OF SUPPLY (4W basis) =====================
+    -- ===================== DAYS OF SUPPLY (shipped basis) =====================
     CASE
-        WHEN COALESCE(V4.DAILY_VELOCITY_4W, 0) = 0        THEN 9999
-        ELSE ROUND(COALESCE(INV.TOTAL_BOH, 0) / V4.DAILY_VELOCITY_4W, 1)
+        WHEN COALESCE(S4.DAILY_SHIPPED_4W, 0) = 0         THEN 9999
+        ELSE ROUND(COALESCE(INV.TOTAL_BOH, 0) / S4.DAILY_SHIPPED_4W, 1)
     END                                                    AS DAYS_OF_SUPPLY,
 
-    -- DOS including inbound forecast
     CASE
-        WHEN COALESCE(V4.DAILY_VELOCITY_4W, 0) = 0        THEN 9999
+        WHEN COALESCE(S4.DAILY_SHIPPED_4W, 0) = 0         THEN 9999
         ELSE ROUND(
             (COALESCE(INV.TOTAL_BOH, 0) + COALESCE(BYF.INCOMING_CASES_14D, 0))
-            / V4.DAILY_VELOCITY_4W, 1
+            / S4.DAILY_SHIPPED_4W, 1
         )
     END                                                    AS DOS_WITH_INBOUND,
 
+    -- ===================== HOURS OF SUPPLY (24hr, shipped basis) =====================
     CASE
-        WHEN COALESCE(V4.DAILY_VELOCITY_4W, 0) = 0
-         AND COALESCE(INV.TOTAL_BOH, 0) > 0               THEN 'DEAD STOCK'
-        WHEN COALESCE(V4.DAILY_VELOCITY_4W, 0) = 0
-         AND COALESCE(INV.TOTAL_BOH, 0) = 0               THEN 'NO INVENTORY'
-        WHEN COALESCE(INV.TOTAL_BOH, 0)
-             / V4.DAILY_VELOCITY_4W < 3                    THEN 'CRITICAL - STOCKOUT RISK'
-        WHEN COALESCE(INV.TOTAL_BOH, 0)
-             / V4.DAILY_VELOCITY_4W BETWEEN 3 AND 7        THEN 'LOW - MONITOR'
-        WHEN COALESCE(INV.TOTAL_BOH, 0)
-             / V4.DAILY_VELOCITY_4W BETWEEN 7 AND 30       THEN 'HEALTHY'
-        WHEN COALESCE(INV.TOTAL_BOH, 0)
-             / V4.DAILY_VELOCITY_4W BETWEEN 30 AND 90      THEN 'OVERSTOCKED'
-        ELSE 'EXCESS - REVIEW'
-    END                                                    AS DOS_STATUS,
-
-    -- ===================== HOURS OF SUPPLY (24hr, 4W) =====================
-    CASE
-        WHEN COALESCE(V4.DAILY_VELOCITY_4W, 0) = 0        THEN 9999
+        WHEN COALESCE(S4.DAILY_SHIPPED_4W, 0) = 0         THEN 9999
         ELSE ROUND(
             (COALESCE(INV.PRIMARY_BOH, 0) * COALESCE(D.CSE_UNIT, 1))
-            / V4.DAILY_VELOCITY_4W * 24,
+            / S4.DAILY_SHIPPED_4W * 24,
             1
         )
     END                                                    AS HOS,
-
-    -- ===================== MOVEMENT STATUS =====================
-    CASE
-        WHEN PH.LAST_BILL_DATE IS NULL                     THEN 'DEAD - NEVER BILLED'
-        WHEN DATEDIFF('MONTH', PH.LAST_BILL_DATE, CURRENT_DATE()) >= 6
-                                                           THEN 'DEAD - NO MOVEMENT 6M+'
-        WHEN DATEDIFF('MONTH', PH.LAST_BILL_DATE, CURRENT_DATE()) >= 3
-                                                           THEN 'SLOW MOVER'
-        WHEN DATEDIFF('MONTH', PH.LAST_BILL_DATE, CURRENT_DATE()) >= 1
-                                                           THEN 'MODERATE'
-        ELSE 'ACTIVE'
-    END                                                    AS MOVEMENT_STATUS,
 
     -- ===================== DEAD STOCK VALUE =====================
     CASE
@@ -366,88 +402,89 @@ SELECT
 
     -- ===================== PRIORITY SCORE =====================
     CASE
-        WHEN COALESCE(V4.DAILY_VELOCITY_4W, 0) > 0
-         AND COALESCE(INV.TOTAL_BOH, 0) / V4.DAILY_VELOCITY_4W < 3
+        WHEN COALESCE(S4.DAILY_SHIPPED_4W, 0) > 0
+         AND COALESCE(INV.TOTAL_BOH, 0) / S4.DAILY_SHIPPED_4W < 3
          AND COALESCE(BYF.INCOMING_CASES_14D, 0) = 0
                                                            THEN 100
-        WHEN COALESCE(V4.DAILY_VELOCITY_4W, 0) > 0
-         AND COALESCE(INV.TOTAL_BOH, 0) / V4.DAILY_VELOCITY_4W < 3
-         AND COALESCE(BYF.INCOMING_CASES_14D, 0) > 0
-                                                           THEN 80
         WHEN (PH.LAST_BILL_DATE IS NULL
               OR DATEDIFF('MONTH', PH.LAST_BILL_DATE, CURRENT_DATE()) >= 6)
          AND COALESCE(INV.TOTAL_BOH, 0) * COALESCE(PR.UNIT_COST, 0) > 500
                                                            THEN 90
+        WHEN COALESCE(S4.DAILY_SHIPPED_4W, 0) > 0
+         AND COALESCE(INV.TOTAL_BOH, 0) / S4.DAILY_SHIPPED_4W < 3
+         AND COALESCE(BYF.INCOMING_CASES_14D, 0) > 0
+                                                           THEN 80
         WHEN (PH.LAST_BILL_DATE IS NULL
               OR DATEDIFF('MONTH', PH.LAST_BILL_DATE, CURRENT_DATE()) >= 6)
          AND COALESCE(INV.TOTAL_BOH, 0) > 0
                                                            THEN 70
+        WHEN COALESCE(S4.TOTAL_SHIPPED_4W, 0) > 0
+         AND COALESCE(D4.TOTAL_DEMAND_4W, 0) > 0
+         AND COALESCE(S4.TOTAL_SHIPPED_4W, 0)
+             / D4.TOTAL_DEMAND_4W < 0.8
+                                                           THEN 60
         WHEN COALESCE(INV.PRIMARY_BOH, 0) = 0
-         AND COALESCE(V4.TOTAL_SHIPPED_4W, 0) > 0
+         AND COALESCE(S4.TOTAL_SHIPPED_4W, 0) > 0
                                                            THEN 50
-        WHEN COALESCE(V4.DAILY_VELOCITY_4W, 0) > 0
-         AND COALESCE(INV.TOTAL_BOH, 0) / V4.DAILY_VELOCITY_4W > 90
+        WHEN COALESCE(S4.DAILY_SHIPPED_4W, 0) > 0
+         AND COALESCE(INV.TOTAL_BOH, 0) / S4.DAILY_SHIPPED_4W > 90
                                                            THEN 40
         ELSE 0
     END                                                    AS PRIORITY_SCORE,
 
     -- ===================== ACTION FLAG =====================
     CASE
-        -- Stockout risk with NO inbound coming
-        WHEN COALESCE(V4.DAILY_VELOCITY_4W, 0) > 0
-         AND COALESCE(INV.TOTAL_BOH, 0) / V4.DAILY_VELOCITY_4W < 3
+        WHEN COALESCE(S4.DAILY_SHIPPED_4W, 0) > 0
+         AND COALESCE(INV.TOTAL_BOH, 0) / S4.DAILY_SHIPPED_4W < 3
          AND COALESCE(BYF.INCOMING_CASES_14D, 0) = 0
                                                            THEN 'REPLENISH URGENTLY - NO INBOUND'
 
-        -- Stockout risk BUT inbound is coming
-        WHEN COALESCE(V4.DAILY_VELOCITY_4W, 0) > 0
-         AND COALESCE(INV.TOTAL_BOH, 0) / V4.DAILY_VELOCITY_4W < 3
+        WHEN COALESCE(S4.DAILY_SHIPPED_4W, 0) > 0
+         AND COALESCE(INV.TOTAL_BOH, 0) / S4.DAILY_SHIPPED_4W < 3
          AND COALESCE(BYF.INCOMING_CASES_14D, 0) > 0
                                                            THEN 'LOW DOS - INBOUND EXPECTED'
 
-        -- Pick slot running low (less than 1 shift)
-        WHEN COALESCE(V4.DAILY_VELOCITY_4W, 0) > 0
+        WHEN COALESCE(S4.DAILY_SHIPPED_4W, 0) > 0
          AND PL.LOC_STOR_CSE_CAP > 0
          AND COALESCE(D.CSE_UNIT, 1) > 0
          AND (COALESCE(INV.PRIMARY_BOH, 0) * COALESCE(D.CSE_UNIT, 1))
-             / V4.DAILY_VELOCITY_4W * 24 < 8
+             / S4.DAILY_SHIPPED_4W * 24 < 8
                                                            THEN 'REPLEN BEFORE NEXT SHIFT'
 
-        -- Dead stock occupying a slot
+        WHEN COALESCE(S4.TOTAL_SHIPPED_4W, 0) > 0
+         AND COALESCE(D4.TOTAL_DEMAND_4W, 0) > 0
+         AND COALESCE(S4.TOTAL_SHIPPED_4W, 0)
+             / D4.TOTAL_DEMAND_4W < 0.8
+                                                           THEN 'LOW FILL RATE - REVIEW'
+
         WHEN (PH.LAST_BILL_DATE IS NULL
               OR DATEDIFF('MONTH', PH.LAST_BILL_DATE, CURRENT_DATE()) >= 6)
          AND COALESCE(INV.TOTAL_BOH, 0) > 0
                                                            THEN 'REVIEW FOR SLOT REMOVAL'
 
-        -- Overstocked AND more coming
-        WHEN COALESCE(V4.DAILY_VELOCITY_4W, 0) > 0
-         AND COALESCE(INV.TOTAL_BOH, 0) / V4.DAILY_VELOCITY_4W > 90
+        WHEN COALESCE(S4.DAILY_SHIPPED_4W, 0) > 0
+         AND COALESCE(INV.TOTAL_BOH, 0) / S4.DAILY_SHIPPED_4W > 90
          AND COALESCE(BYF.INCOMING_CASES_14D, 0) > 0
                                                            THEN 'OVERSTOCK + MORE INBOUND'
 
-        -- Overstocked
-        WHEN COALESCE(V4.DAILY_VELOCITY_4W, 0) > 0
-         AND COALESCE(INV.TOTAL_BOH, 0) / V4.DAILY_VELOCITY_4W > 90
+        WHEN COALESCE(S4.DAILY_SHIPPED_4W, 0) > 0
+         AND COALESCE(INV.TOTAL_BOH, 0) / S4.DAILY_SHIPPED_4W > 90
                                                            THEN 'REVIEW OVERSTOCK'
 
-        -- Demand increasing
-        WHEN COALESCE(V13.SHIPPED_PER_WEEK_13W, 0) > 0
-         AND COALESCE(V4.SHIPPED_PER_WEEK_4W, 0)
-             / V13.SHIPPED_PER_WEEK_13W > 2.0
+        WHEN COALESCE(S13.SHIPPED_PER_WEEK_13W, 0) > 0
+         AND COALESCE(S4.SHIPPED_PER_WEEK_4W, 0)
+             / S13.SHIPPED_PER_WEEK_13W > 2.0
                                                            THEN 'DEMAND INCREASING - MONITOR'
 
-        -- Demand declining
-        WHEN COALESCE(V13.SHIPPED_PER_WEEK_13W, 0) > 0
-         AND COALESCE(V4.SHIPPED_PER_WEEK_4W, 0)
-             / V13.SHIPPED_PER_WEEK_13W < 0.5
+        WHEN COALESCE(S13.SHIPPED_PER_WEEK_13W, 0) > 0
+         AND COALESCE(S4.SHIPPED_PER_WEEK_4W, 0)
+             / S13.SHIPPED_PER_WEEK_13W < 0.5
                                                            THEN 'DEMAND DECLINING - MONITOR'
 
-        -- Empty slot but product has demand
         WHEN COALESCE(INV.PRIMARY_BOH, 0) = 0
-         AND COALESCE(V4.TOTAL_SHIPPED_4W, 0) > 0
+         AND COALESCE(S4.TOTAL_SHIPPED_4W, 0) > 0
                                                            THEN 'INVESTIGATE STOCKOUT'
 
-        -- Inventory exists but no pick slot
         WHEN COALESCE(INV.TOTAL_BOH, 0) > 0
          AND INV.PRIMARY_LOC IS NULL
                                                            THEN 'UNSLOTTED INVENTORY'
@@ -471,20 +508,35 @@ LEFT JOIN CORE_FSSC.CURATED_LOGISTICS.ILOC LOC
     AND PL.DC_ID   = LOC.DC_ID
     AND PL.WHSE_ID = LOC.WHSE_ID
 
+LEFT JOIN CORE_FSSC.CURATED_LOGISTICS.FSELC SEC
+    ON PL.WHSE_ID  = SEC.WHSE_ID
+    AND PL.DC_ID   = SEC.DC_ID
+    AND PL.LOC_ID BETWEEN SEC.FROM_LOC_ID AND SEC.TO_LOC_ID
+
 LEFT JOIN INVENTORY INV
     ON PL.PROD_ID  = INV.PROD_ID
     AND PL.DC_ID   = INV.DC_ID
     AND PL.WHSE_ID = INV.WHSE_ID
 
-LEFT JOIN VELOCITY_4W V4
-    ON PL.PROD_ID  = V4.SKU_NBR
-    AND PL.DC_ID   = V4.DC_ID
-    AND PL.WHSE_ID = V4.WHSE_ID
+LEFT JOIN SHIPPED_4W S4
+    ON PL.PROD_ID  = S4.SKU_NBR
+    AND PL.DC_ID   = S4.DC_ID
+    AND PL.WHSE_ID = S4.WHSE_ID
 
-LEFT JOIN VELOCITY_13W V13
-    ON PL.PROD_ID  = V13.SKU_NBR
-    AND PL.DC_ID   = V13.DC_ID
-    AND PL.WHSE_ID = V13.WHSE_ID
+LEFT JOIN SHIPPED_13W S13
+    ON PL.PROD_ID  = S13.SKU_NBR
+    AND PL.DC_ID   = S13.DC_ID
+    AND PL.WHSE_ID = S13.WHSE_ID
+
+LEFT JOIN DEMAND_4W D4
+    ON PL.PROD_ID  = D4.SKU_NBR
+    AND PL.DC_ID   = D4.DC_ID
+    AND PL.WHSE_ID = D4.WHSE_ID
+
+LEFT JOIN DEMAND_13W D13
+    ON PL.PROD_ID  = D13.SKU_NBR
+    AND PL.DC_ID   = D13.DC_ID
+    AND PL.WHSE_ID = D13.WHSE_ID
 
 LEFT JOIN PICK_HISTORY PH
     ON PL.PROD_ID  = PH.SKU_NBR
