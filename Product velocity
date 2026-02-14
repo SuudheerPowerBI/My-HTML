@@ -1,7 +1,7 @@
 -- ============================================================
--- INVENTORY OPTIMIZATION - UNIFIED QUERY
+-- INVENTORY OPTIMIZATION - UNIFIED QUERY (SNOWFLAKE)
 -- One row per DC + SKU with ALL metrics
--- CVS Health Distribution Centers | Oracle WMS
+-- Schema: CORE_FSSC.CURATED_LOGISTICS
 -- ============================================================
 -- Tables: IPLAS, ILOC, IPRDD, IPROD, IINVD, ASELD
 -- Author: Sudheer
@@ -11,269 +11,296 @@
 WITH
 
 -- 1) PICK ACTIVITY: Last 30 days
-picks_30d AS (
+PICKS_30D AS (
     SELECT
         DC_ID,
         WHSE_ID,
-        TRUNC(PROD_ID) AS SKU_NBR,
-        SUM(PROD_QTY) AS TOTAL_PICKS_30D,
-        ROUND(SUM(PROD_QTY) / 30, 2) AS AVG_DAILY_DEMAND,
-        COUNT(DISTINCT TRUNC(COMPLETE_DTIM)) AS ACTIVE_PICK_DAYS_30D
-    FROM ASELD
-    WHERE TRUNC(COMPLETE_DTIM) >= TRUNC(SYSDATE) - 30
-    GROUP BY DC_ID, WHSE_ID, TRUNC(PROD_ID)
+        PROD_ID AS SKU_NBR,
+        SUM(PROD_QTY)                                    AS TOTAL_PICKS_30D,
+        ROUND(SUM(PROD_QTY) / 30, 2)                     AS AVG_DAILY_DEMAND,
+        COUNT(DISTINCT TRUNC(COMPLETE_DTIM, 'DAY'))       AS ACTIVE_PICK_DAYS_30D
+    FROM CORE_FSSC.CURATED_LOGISTICS.ASELD
+    WHERE COMPLETE_DTIM >= DATEADD(DAY, -30, CURRENT_DATE())
+      AND JCFN_ID IN ('05','11')        -- Split case picks
+    GROUP BY DC_ID, WHSE_ID, PROD_ID
 ),
 
 -- 2) PICK ACTIVITY: Last 90 days (for dead/slow stock)
-picks_90d AS (
+PICKS_90D AS (
     SELECT
         DC_ID,
         WHSE_ID,
-        TRUNC(PROD_ID) AS SKU_NBR,
-        SUM(PROD_QTY) AS TOTAL_PICKS_90D,
-        COUNT(DISTINCT TRUNC(COMPLETE_DTIM)) AS ACTIVE_DAYS_90D,
-        MAX(TRUNC(COMPLETE_DTIM)) AS LAST_PICK_DATE
-    FROM ASELD
-    WHERE TRUNC(COMPLETE_DTIM) >= TRUNC(SYSDATE) - 90
-    GROUP BY DC_ID, WHSE_ID, TRUNC(PROD_ID)
+        PROD_ID AS SKU_NBR,
+        SUM(PROD_QTY)                                    AS TOTAL_PICKS_90D,
+        COUNT(DISTINCT TRUNC(COMPLETE_DTIM, 'DAY'))       AS ACTIVE_DAYS_90D,
+        MAX(TRUNC(COMPLETE_DTIM, 'DAY'))                  AS LAST_PICK_DATE
+    FROM CORE_FSSC.CURATED_LOGISTICS.ASELD
+    WHERE COMPLETE_DTIM >= DATEADD(DAY, -90, CURRENT_DATE())
+      AND JCFN_ID IN ('05','11')
+    GROUP BY DC_ID, WHSE_ID, PROD_ID
 ),
 
--- 3) INVENTORY BALANCES: Pick vs Reserve BOH
-inventory AS (
+-- 3) INVENTORY BALANCES: Pick vs Reserve BOH from IINVD
+INVENTORY AS (
     SELECT
-        pl.DC_ID,
-        pl.WHSE_ID,
-        TRUNC(pl.PROD_ID) AS SKU_NBR,
-        pl.PLAS_ID,
-        SUM(CASE WHEN i.INV_POS_CAT = 'P' THEN i.PROD_QTY ELSE 0 END) AS PICK_BOH,
-        SUM(CASE WHEN i.INV_POS_CAT = 'R' THEN i.PROD_QTY ELSE 0 END) AS RESERVE_BOH,
-        SUM(i.PROD_QTY) AS TOTAL_BOH,
-        COUNT(DISTINCT CASE WHEN i.INV_POS_CAT = 'R' THEN i.LIC_PLT_ID END) AS RESERVE_LPN_COUNT,
-        MIN(i.RECEIPT_DTIM) AS EARLIEST_RECEIPT,
-        MAX(i.RECEIPT_DTIM) AS LATEST_RECEIPT
-    FROM IPLAS pl
-    JOIN IINVD i ON pl.PLAS_ID = i.PLAS_ID
-    WHERE pl.LCUS_ID = 'P'
-      AND i.ISTA_ID = 'A'
-    GROUP BY pl.DC_ID, pl.WHSE_ID, TRUNC(pl.PROD_ID), pl.PLAS_ID
+        I.PLAS_ID,
+        SUM(CASE WHEN I.INV_POS_CAT = 'P' THEN I.PROD_QTY ELSE 0 END)       AS PICK_BOH,
+        SUM(CASE WHEN I.INV_POS_CAT = 'R' THEN I.PROD_QTY ELSE 0 END)       AS RESERVE_BOH,
+        SUM(I.PROD_QTY)                                                       AS TOTAL_BOH,
+        COUNT(DISTINCT CASE WHEN I.INV_POS_CAT = 'R' THEN I.LIC_PLT_ID END)  AS RESERVE_LPN_COUNT,
+        MIN(I.RECEIPT_DTIM)                                                    AS EARLIEST_RECEIPT,
+        MAX(I.RECEIPT_DTIM)                                                    AS LATEST_RECEIPT
+    FROM CORE_FSSC.CURATED_LOGISTICS.IINVD I
+    WHERE I.ISTA_ID = 'A'    -- Active inventory only
+    GROUP BY I.PLAS_ID
 )
 
 -- ============================================================
 -- MAIN SELECT: One row per DC + SKU
 -- ============================================================
 SELECT
-    -- IDENTIFIERS
-    pl.DC_ID,
-    pl.WHSE_ID,
-    TRUNC(pl.PROD_ID) AS SKU_NBR,
-    pr.DESCRIPTION,
-    pr.VEND_ID,
-    pr.UNIT_COST,
+    -- ===================== IDENTIFIERS =====================
+    PL.DC_ID,
+    PL.WHSE_ID,
+    PL.PROD_ID                                             AS SKU_NBR,
+    PR.DESCRIPTION,
+    PR.VEND_ID,
+    PR.UNIT_COST,
+    PR.MAJOR_MINOR_CLASS,
 
-    -- SLOT INFO
-    pl.LOC_ID AS PICK_SLOT,
-    pl.LOC_STOR_CSE_CAP AS CASECAP,
-    pl.MIN_SEL_LVL,
-    loc.LEV AS SLOT_LEVEL,
-    loc.Z_COORD AS Z1,
+    -- ===================== SLOT INFO =====================
+    PL.LOC_ID                                              AS PICK_SLOT,
+    PL.LOC_STOR_CSE_CAP                                    AS CASECAP,
+    PL.MIN_SEL_LVL,
+    LOC.LEV                                                AS SLOT_LEVEL,
+    LOC.Z_COORD                                            AS Z1,
+    LOC.LDES_ID                                            AS LOCATION_TYPE,   -- SF / FW / RK
 
-    -- CASE DIMENSIONS
-    d.CSE_HGT,
-    d.CSE_LEN,
-    d.CSE_WID,
-    d.CSE_CUB,
-    d.CSE_WGT,
+    -- ===================== CASE DIMENSIONS =====================
+    D.CSE_HGT,
+    D.CSE_LEN,
+    D.CSE_WID,
+    D.CSE_CUB,
+    D.CSE_WGT,
 
-    -- INVENTORY POSITION
-    NVL(inv.PICK_BOH, 0) AS PICK_BOH,
-    NVL(inv.RESERVE_BOH, 0) AS RESERVE_BOH,
-    NVL(inv.TOTAL_BOH, 0) AS TOTAL_BOH,
-    NVL(inv.RESERVE_LPN_COUNT, 0) AS RESERVE_LPN_COUNT,
-    inv.EARLIEST_RECEIPT,
-    inv.LATEST_RECEIPT,
+    -- ===================== INVENTORY POSITION =====================
+    COALESCE(INV.PICK_BOH, 0)                              AS PICK_BOH,
+    COALESCE(INV.RESERVE_BOH, 0)                           AS RESERVE_BOH,
+    COALESCE(INV.TOTAL_BOH, 0)                             AS TOTAL_BOH,
+    COALESCE(INV.RESERVE_LPN_COUNT, 0)                     AS RESERVE_LPN_COUNT,
+    INV.EARLIEST_RECEIPT,
+    INV.LATEST_RECEIPT,
 
     -- INVENTORY VALUE
-    ROUND(NVL(inv.TOTAL_BOH, 0) * NVL(pr.UNIT_COST, 0), 2) AS INVENTORY_VALUE,
+    ROUND(COALESCE(INV.TOTAL_BOH, 0) * COALESCE(PR.UNIT_COST, 0), 2)
+                                                           AS INVENTORY_VALUE,
 
-    -- SLOT UTILIZATION
+    -- ===================== SLOT UTILIZATION =====================
     CASE
-        WHEN pl.LOC_STOR_CSE_CAP > 0
-        THEN ROUND(NVL(inv.PICK_BOH, 0) * 100.0 / pl.LOC_STOR_CSE_CAP, 1)
+        WHEN PL.LOC_STOR_CSE_CAP > 0
+        THEN ROUND(COALESCE(INV.PICK_BOH, 0) * 100.0 / PL.LOC_STOR_CSE_CAP, 1)
         ELSE 0
-    END AS SLOT_UTIL_PCT,
+    END                                                    AS SLOT_UTIL_PCT,
 
     CASE
-        WHEN pl.LOC_STOR_CSE_CAP = 0 THEN 'NO CAPACITY SET'
-        WHEN NVL(inv.PICK_BOH, 0) = 0 THEN 'EMPTY SLOT'
-        WHEN NVL(inv.PICK_BOH, 0) <= pl.MIN_SEL_LVL THEN 'BELOW MIN'
-        WHEN NVL(inv.PICK_BOH, 0) * 100.0 / pl.LOC_STOR_CSE_CAP < 25 THEN 'LOW'
-        WHEN NVL(inv.PICK_BOH, 0) * 100.0 / pl.LOC_STOR_CSE_CAP BETWEEN 25 AND 75 THEN 'NORMAL'
+        WHEN PL.LOC_STOR_CSE_CAP = 0               THEN 'NO CAPACITY SET'
+        WHEN COALESCE(INV.PICK_BOH, 0) = 0         THEN 'EMPTY SLOT'
+        WHEN COALESCE(INV.PICK_BOH, 0)
+             <= PL.MIN_SEL_LVL                      THEN 'BELOW MIN'
+        WHEN COALESCE(INV.PICK_BOH, 0) * 100.0
+             / PL.LOC_STOR_CSE_CAP < 25             THEN 'LOW'
+        WHEN COALESCE(INV.PICK_BOH, 0) * 100.0
+             / PL.LOC_STOR_CSE_CAP BETWEEN 25 AND 75 THEN 'NORMAL'
         ELSE 'HIGH'
-    END AS UTIL_STATUS,
+    END                                                    AS UTIL_STATUS,
 
-    -- DEMAND (30 DAY)
-    NVL(p30.TOTAL_PICKS_30D, 0) AS PICKS_30D,
-    NVL(p30.AVG_DAILY_DEMAND, 0) AS AVG_DAILY_DEMAND,
-    NVL(p30.ACTIVE_PICK_DAYS_30D, 0) AS ACTIVE_PICK_DAYS_30D,
+    -- ===================== DEMAND (30 DAY) =====================
+    COALESCE(P30.TOTAL_PICKS_30D, 0)                       AS PICKS_30D,
+    COALESCE(P30.AVG_DAILY_DEMAND, 0)                      AS AVG_DAILY_DEMAND,
+    COALESCE(P30.ACTIVE_PICK_DAYS_30D, 0)                  AS ACTIVE_PICK_DAYS_30D,
 
-    -- DEMAND (90 DAY)
-    NVL(p90.TOTAL_PICKS_90D, 0) AS PICKS_90D,
-    NVL(p90.ACTIVE_DAYS_90D, 0) AS ACTIVE_DAYS_90D,
-    p90.LAST_PICK_DATE,
+    -- ===================== DEMAND (90 DAY) =====================
+    COALESCE(P90.TOTAL_PICKS_90D, 0)                       AS PICKS_90D,
+    COALESCE(P90.ACTIVE_DAYS_90D, 0)                       AS ACTIVE_DAYS_90D,
+    P90.LAST_PICK_DATE,
+
+    DATEDIFF(DAY, P90.LAST_PICK_DATE, CURRENT_DATE())      AS DAYS_SINCE_LAST_PICK,
+
+    -- ===================== DAYS OF SUPPLY =====================
     CASE
-        WHEN p90.LAST_PICK_DATE IS NOT NULL
-        THEN TRUNC(SYSDATE) - p90.LAST_PICK_DATE
-        ELSE 999
-    END AS DAYS_SINCE_LAST_PICK,
-
-    -- DAYS OF SUPPLY
-    CASE
-        WHEN NVL(p30.AVG_DAILY_DEMAND, 0) = 0 THEN 9999
-        ELSE ROUND(NVL(inv.TOTAL_BOH, 0) / p30.AVG_DAILY_DEMAND, 1)
-    END AS DAYS_OF_SUPPLY,
+        WHEN COALESCE(P30.AVG_DAILY_DEMAND, 0) = 0 THEN 9999
+        ELSE ROUND(COALESCE(INV.TOTAL_BOH, 0) / P30.AVG_DAILY_DEMAND, 1)
+    END                                                    AS DAYS_OF_SUPPLY,
 
     CASE
-        WHEN NVL(p30.AVG_DAILY_DEMAND, 0) = 0 AND NVL(inv.TOTAL_BOH, 0) > 0
-            THEN 'DEAD STOCK'
-        WHEN NVL(p30.AVG_DAILY_DEMAND, 0) = 0 AND NVL(inv.TOTAL_BOH, 0) = 0
-            THEN 'NO INVENTORY'
-        WHEN NVL(inv.TOTAL_BOH, 0) / p30.AVG_DAILY_DEMAND < 3
-            THEN 'CRITICAL - STOCKOUT RISK'
-        WHEN NVL(inv.TOTAL_BOH, 0) / p30.AVG_DAILY_DEMAND BETWEEN 3 AND 7
-            THEN 'LOW - MONITOR'
-        WHEN NVL(inv.TOTAL_BOH, 0) / p30.AVG_DAILY_DEMAND BETWEEN 7 AND 30
-            THEN 'HEALTHY'
-        WHEN NVL(inv.TOTAL_BOH, 0) / p30.AVG_DAILY_DEMAND BETWEEN 30 AND 90
-            THEN 'OVERSTOCKED'
+        WHEN COALESCE(P30.AVG_DAILY_DEMAND, 0) = 0
+         AND COALESCE(INV.TOTAL_BOH, 0) > 0               THEN 'DEAD STOCK'
+        WHEN COALESCE(P30.AVG_DAILY_DEMAND, 0) = 0
+         AND COALESCE(INV.TOTAL_BOH, 0) = 0               THEN 'NO INVENTORY'
+        WHEN COALESCE(INV.TOTAL_BOH, 0)
+             / P30.AVG_DAILY_DEMAND < 3                    THEN 'CRITICAL - STOCKOUT RISK'
+        WHEN COALESCE(INV.TOTAL_BOH, 0)
+             / P30.AVG_DAILY_DEMAND BETWEEN 3 AND 7        THEN 'LOW - MONITOR'
+        WHEN COALESCE(INV.TOTAL_BOH, 0)
+             / P30.AVG_DAILY_DEMAND BETWEEN 7 AND 30       THEN 'HEALTHY'
+        WHEN COALESCE(INV.TOTAL_BOH, 0)
+             / P30.AVG_DAILY_DEMAND BETWEEN 30 AND 90      THEN 'OVERSTOCKED'
         ELSE 'EXCESS - REVIEW'
-    END AS DOS_STATUS,
+    END                                                    AS DOS_STATUS,
 
-    -- MOVEMENT CLASSIFICATION (90 DAY)
+    -- ===================== MOVEMENT CLASSIFICATION =====================
     CASE
-        WHEN NVL(p90.TOTAL_PICKS_90D, 0) = 0
-            THEN 'DEAD - NO MOVEMENT'
-        WHEN p90.ACTIVE_DAYS_90D < 5
-            THEN 'NEAR-DEAD'
-        WHEN p90.ACTIVE_DAYS_90D < 15
-            THEN 'SLOW MOVER'
-        WHEN p90.ACTIVE_DAYS_90D < 45
-            THEN 'MODERATE'
+        WHEN COALESCE(P90.TOTAL_PICKS_90D, 0) = 0         THEN 'DEAD - NO MOVEMENT'
+        WHEN P90.ACTIVE_DAYS_90D < 5                       THEN 'NEAR-DEAD'
+        WHEN P90.ACTIVE_DAYS_90D < 15                      THEN 'SLOW MOVER'
+        WHEN P90.ACTIVE_DAYS_90D < 45                      THEN 'MODERATE'
         ELSE 'ACTIVE'
-    END AS MOVEMENT_STATUS,
+    END                                                    AS MOVEMENT_STATUS,
 
-    -- REPLENISHMENT INTENSITY
+    -- ===================== REPLENISHMENT INTENSITY =====================
     CASE
-        WHEN pl.LOC_STOR_CSE_CAP = 0 OR pl.LOC_STOR_CSE_CAP IS NULL THEN 0
-        WHEN NVL(p30.AVG_DAILY_DEMAND, 0) = 0 THEN 0
+        WHEN NULLIF(PL.LOC_STOR_CSE_CAP, 0) IS NULL       THEN 0
+        WHEN COALESCE(P30.AVG_DAILY_DEMAND, 0) = 0        THEN 0
         ELSE ROUND(
-            p30.AVG_DAILY_DEMAND
-            / GREATEST(pl.LOC_STOR_CSE_CAP - NVL(pl.MIN_SEL_LVL, 0), 1),
+            P30.AVG_DAILY_DEMAND
+            / GREATEST(PL.LOC_STOR_CSE_CAP - COALESCE(PL.MIN_SEL_LVL, 0), 1),
             2
         )
-    END AS EST_REPLEN_PER_DAY,
+    END                                                    AS EST_REPLEN_PER_DAY,
 
     -- Slot coverage: how long does a full slot last?
     CASE
-        WHEN NVL(p30.AVG_DAILY_DEMAND, 0) = 0 THEN 9999
-        ELSE ROUND(pl.LOC_STOR_CSE_CAP / p30.AVG_DAILY_DEMAND, 1)
-    END AS SLOT_COVERAGE_DAYS,
+        WHEN COALESCE(P30.AVG_DAILY_DEMAND, 0) = 0        THEN 9999
+        ELSE ROUND(PL.LOC_STOR_CSE_CAP / NULLIF(P30.AVG_DAILY_DEMAND, 0), 1)
+    END                                                    AS SLOT_COVERAGE_DAYS,
 
     CASE
-        WHEN pl.LOC_STOR_CSE_CAP = 0 THEN 'NO CAPACITY'
-        WHEN NVL(p30.AVG_DAILY_DEMAND, 0) = 0 THEN 'NO DEMAND'
-        WHEN p30.AVG_DAILY_DEMAND / GREATEST(pl.LOC_STOR_CSE_CAP - NVL(pl.MIN_SEL_LVL, 0), 1) >= 3
-            THEN 'CRITICAL - RESIZE SLOT'
-        WHEN p30.AVG_DAILY_DEMAND / GREATEST(pl.LOC_STOR_CSE_CAP - NVL(pl.MIN_SEL_LVL, 0), 1) >= 2
-            THEN 'HIGH - REVIEW'
-        WHEN p30.AVG_DAILY_DEMAND / GREATEST(pl.LOC_STOR_CSE_CAP - NVL(pl.MIN_SEL_LVL, 0), 1) >= 1
-            THEN 'MODERATE'
+        WHEN NULLIF(PL.LOC_STOR_CSE_CAP, 0) IS NULL       THEN 'NO CAPACITY'
+        WHEN COALESCE(P30.AVG_DAILY_DEMAND, 0) = 0        THEN 'NO DEMAND'
+        WHEN P30.AVG_DAILY_DEMAND
+             / GREATEST(PL.LOC_STOR_CSE_CAP - COALESCE(PL.MIN_SEL_LVL, 0), 1) >= 3
+                                                           THEN 'CRITICAL - RESIZE SLOT'
+        WHEN P30.AVG_DAILY_DEMAND
+             / GREATEST(PL.LOC_STOR_CSE_CAP - COALESCE(PL.MIN_SEL_LVL, 0), 1) >= 2
+                                                           THEN 'HIGH - REVIEW'
+        WHEN P30.AVG_DAILY_DEMAND
+             / GREATEST(PL.LOC_STOR_CSE_CAP - COALESCE(PL.MIN_SEL_LVL, 0), 1) >= 1
+                                                           THEN 'MODERATE'
         ELSE 'NORMAL'
-    END AS REPLEN_STATUS,
+    END                                                    AS REPLEN_STATUS,
 
-    -- ESTIMATED ANNUAL REPLEN TRIPS SAVED IF SLOT DOUBLED
+    -- Estimated annual forklift trips saved if slot capacity doubled
     CASE
-        WHEN pl.LOC_STOR_CSE_CAP = 0 OR NVL(p30.AVG_DAILY_DEMAND, 0) = 0 THEN 0
+        WHEN NULLIF(PL.LOC_STOR_CSE_CAP, 0) IS NULL       THEN 0
+        WHEN COALESCE(P30.AVG_DAILY_DEMAND, 0) = 0        THEN 0
         ELSE ROUND(
-            (p30.AVG_DAILY_DEMAND / GREATEST(pl.LOC_STOR_CSE_CAP - NVL(pl.MIN_SEL_LVL, 0), 1))
+            (P30.AVG_DAILY_DEMAND
+             / GREATEST(PL.LOC_STOR_CSE_CAP - COALESCE(PL.MIN_SEL_LVL, 0), 1))
             * 365 / 2,
             0
         )
-    END AS EST_ANNUAL_TRIPS_SAVED,
+    END                                                    AS EST_ANNUAL_TRIPS_SAVED,
 
-    -- DEAD STOCK VALUE (only for non-movers)
+    -- ===================== DEAD STOCK VALUE =====================
     CASE
-        WHEN NVL(p90.TOTAL_PICKS_90D, 0) = 0
-        THEN ROUND(NVL(inv.TOTAL_BOH, 0) * NVL(pr.UNIT_COST, 0), 2)
+        WHEN COALESCE(P90.TOTAL_PICKS_90D, 0) = 0
+        THEN ROUND(COALESCE(INV.TOTAL_BOH, 0) * COALESCE(PR.UNIT_COST, 0), 2)
         ELSE 0
-    END AS DEAD_STOCK_VALUE,
+    END                                                    AS DEAD_STOCK_VALUE,
 
-    -- OVERALL PRIORITY SCORE (higher = needs attention first)
-    -- Weights: Stockout risk > Dead stock > High replen > Low util
+    -- ===================== PRIORITY SCORE =====================
+    -- Higher = needs attention first
+    -- Stockout risk > Dead stock > High replen > Low util
     CASE
-        -- Stockout risk: high priority
-        WHEN NVL(p30.AVG_DAILY_DEMAND, 0) > 0
-         AND NVL(inv.TOTAL_BOH, 0) / p30.AVG_DAILY_DEMAND < 3
-            THEN 100
+        -- Stockout risk: highest priority
+        WHEN COALESCE(P30.AVG_DAILY_DEMAND, 0) > 0
+         AND COALESCE(INV.TOTAL_BOH, 0) / P30.AVG_DAILY_DEMAND < 3
+                                                           THEN 100
         -- Dead stock with high value
-        WHEN NVL(p90.TOTAL_PICKS_90D, 0) = 0
-         AND NVL(inv.TOTAL_BOH, 0) * NVL(pr.UNIT_COST, 0) > 500
-            THEN 90
+        WHEN COALESCE(P90.TOTAL_PICKS_90D, 0) = 0
+         AND COALESCE(INV.TOTAL_BOH, 0) * COALESCE(PR.UNIT_COST, 0) > 500
+                                                           THEN 90
         -- Dead stock low value
-        WHEN NVL(p90.TOTAL_PICKS_90D, 0) = 0
-         AND NVL(inv.TOTAL_BOH, 0) > 0
-            THEN 70
+        WHEN COALESCE(P90.TOTAL_PICKS_90D, 0) = 0
+         AND COALESCE(INV.TOTAL_BOH, 0) > 0
+                                                           THEN 70
         -- High replen frequency
-        WHEN pl.LOC_STOR_CSE_CAP > 0
-         AND NVL(p30.AVG_DAILY_DEMAND, 0) > 0
-         AND p30.AVG_DAILY_DEMAND / GREATEST(pl.LOC_STOR_CSE_CAP - NVL(pl.MIN_SEL_LVL, 0), 1) >= 2
-            THEN 60
+        WHEN NULLIF(PL.LOC_STOR_CSE_CAP, 0) IS NOT NULL
+         AND COALESCE(P30.AVG_DAILY_DEMAND, 0) > 0
+         AND P30.AVG_DAILY_DEMAND
+             / GREATEST(PL.LOC_STOR_CSE_CAP - COALESCE(PL.MIN_SEL_LVL, 0), 1) >= 2
+                                                           THEN 60
         -- Empty slot with active product
-        WHEN NVL(inv.PICK_BOH, 0) = 0
-         AND NVL(p30.TOTAL_PICKS_30D, 0) > 0
-            THEN 50
+        WHEN COALESCE(INV.PICK_BOH, 0) = 0
+         AND COALESCE(P30.TOTAL_PICKS_30D, 0) > 0
+                                                           THEN 50
         -- Overstocked
-        WHEN NVL(p30.AVG_DAILY_DEMAND, 0) > 0
-         AND NVL(inv.TOTAL_BOH, 0) / p30.AVG_DAILY_DEMAND > 90
-            THEN 40
+        WHEN COALESCE(P30.AVG_DAILY_DEMAND, 0) > 0
+         AND COALESCE(INV.TOTAL_BOH, 0) / P30.AVG_DAILY_DEMAND > 90
+                                                           THEN 40
         ELSE 0
-    END AS PRIORITY_SCORE
+    END                                                    AS PRIORITY_SCORE,
 
-FROM IPLAS pl
+    -- ===================== DC NAME MAPPING =====================
+    CASE
+        WHEN PL.DC_ID = 1  THEN 'WN'
+        WHEN PL.DC_ID = 2  THEN 'IN'
+        WHEN PL.DC_ID = 3  THEN 'PA'
+        WHEN PL.DC_ID = 4  THEN 'NJ'
+        WHEN PL.DC_ID = 5  THEN 'MA'
+        WHEN PL.DC_ID = 6  THEN 'TN'
+        WHEN PL.DC_ID = 8  THEN 'SC'
+        WHEN PL.DC_ID = 10 THEN 'DT'
+        WHEN PL.DC_ID = 12 THEN 'OR'
+        WHEN PL.DC_ID = 13 THEN 'CR'
+        WHEN PL.DC_ID = 14 THEN 'UC'
+        WHEN PL.DC_ID = 15 THEN 'LA'
+        WHEN PL.DC_ID = 16 THEN 'BV'
+        WHEN PL.DC_ID = 17 THEN 'HI'
+        WHEN PL.DC_ID = 20 THEN 'YK'
+        WHEN PL.DC_ID = 21 THEN 'KC'
+        WHEN PL.DC_ID = 22 THEN 'JC'
+        ELSE 'DC' || PL.DC_ID
+    END                                                    AS DC_NAME
+
+FROM CORE_FSSC.CURATED_LOGISTICS.IPLAS PL
 
 -- Product master
-JOIN IPROD pr
-    ON TRUNC(pl.PROD_ID) = pr.PROD_ID
-    AND pl.DC_ID = pr.DC_ID
+JOIN CORE_FSSC.CURATED_LOGISTICS.IPROD PR
+    ON PL.PROD_ID = PR.PROD_ID
+    AND PL.DC_ID  = PR.DC_ID
 
 -- Case dimensions (PRDD_ID = 1 to avoid duplicates)
-LEFT JOIN IPRDD d
-    ON pl.PROD_ID = d.PROD_ID
-    AND pl.DC_ID = d.DC_ID
-    AND d.PRDD_ID = 1
+LEFT JOIN CORE_FSSC.CURATED_LOGISTICS.IPRDD D
+    ON PL.PROD_ID = D.PROD_ID
+    AND PL.DC_ID  = D.DC_ID
+    AND D.PRDD_ID = 1
 
 -- Location attributes
-LEFT JOIN ILOC loc
-    ON pl.LOC_ID = loc.LOC_ID
-    AND pl.DC_ID = loc.DC_ID
-    AND pl.WHSE_ID = loc.WHSE_ID
+LEFT JOIN CORE_FSSC.CURATED_LOGISTICS.ILOC LOC
+    ON PL.LOC_ID  = LOC.LOC_ID
+    AND PL.DC_ID  = LOC.DC_ID
+    AND PL.WHSE_ID = LOC.WHSE_ID
 
--- Inventory balances
-LEFT JOIN inventory inv
-    ON pl.PLAS_ID = inv.PLAS_ID
+-- Inventory balances (joined on PLAS_ID)
+LEFT JOIN INVENTORY INV
+    ON PL.PLAS_ID = INV.PLAS_ID
 
 -- 30-day pick activity
-LEFT JOIN picks_30d p30
-    ON TRUNC(pl.PROD_ID) = p30.SKU_NBR
-    AND pl.DC_ID = p30.DC_ID
-    AND pl.WHSE_ID = p30.WHSE_ID
+LEFT JOIN PICKS_30D P30
+    ON PL.PROD_ID  = P30.SKU_NBR
+    AND PL.DC_ID   = P30.DC_ID
+    AND PL.WHSE_ID = P30.WHSE_ID
 
 -- 90-day pick activity
-LEFT JOIN picks_90d p90
-    ON TRUNC(pl.PROD_ID) = p90.SKU_NBR
-    AND pl.DC_ID = p90.DC_ID
-    AND pl.WHSE_ID = p90.WHSE_ID
+LEFT JOIN PICKS_90D P90
+    ON PL.PROD_ID  = P90.SKU_NBR
+    AND PL.DC_ID   = P90.DC_ID
+    AND PL.WHSE_ID = P90.WHSE_ID
 
-WHERE pl.LCUS_ID = 'P'           -- Pick locations only
-  AND pr.DISCON_IND = 'N'        -- Active products only
+WHERE PL.LCUS_ID = 'P'                      -- Pick locations only
+  AND PR.DISCON_IND = 'N'                    -- Active products only
+  AND PL.DC_ID NOT IN (7, 13, 22)            -- Exclude AL, CR, JC
 
-ORDER BY PRIORITY_SCORE DESC, DAYS_OF_SUPPLY ASC;
+ORDER BY PRIORITY_SCORE DESC, DAYS_OF_SUPPLY ASC
+;
