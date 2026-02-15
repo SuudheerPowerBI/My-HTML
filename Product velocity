@@ -409,7 +409,7 @@ SELECT
          AND COALESCE(FO.FUTURE_ORDERS_5D, 0) > 0
          AND COALESCE(BYF.INCOMING_14D, 0) > 0
                                                            THEN 95
-        -- Low DOS, no reserve, no inbound
+        -- Low stock, no reserve, no inbound
         WHEN COALESCE(S4.DAILY_SHIPPED_4W, 0) > 0
          AND COALESCE(INV.TOTAL_BOH, 0) / S4.DAILY_SHIPPED_4W < 3
          AND COALESCE(INV.RESERVE_BOH, 0) = 0
@@ -420,7 +420,7 @@ SELECT
               OR DATEDIFF('MONTH', PH.LAST_BILL_DATE, CURRENT_DATE()) >= 6)
          AND COALESCE(INV.TOTAL_BOH, 0) * COALESCE(PR.UNIT_COST, 0) > 500
                                                            THEN 85
-        -- Low DOS, no reserve, inbound expected
+        -- Low stock, no reserve, inbound expected
         WHEN COALESCE(S4.DAILY_SHIPPED_4W, 0) > 0
          AND COALESCE(INV.TOTAL_BOH, 0) / S4.DAILY_SHIPPED_4W < 3
          AND COALESCE(INV.RESERVE_BOH, 0) = 0
@@ -476,14 +476,14 @@ SELECT
          AND COALESCE(INV.TOTAL_BOH, 0) / S4.DAILY_SHIPPED_4W < 3
          AND COALESCE(INV.RESERVE_BOH, 0) = 0
          AND COALESCE(BYF.INCOMING_14D, 0) = 0
-                                                           THEN 'REPLENISH URGENTLY - NO INBOUND'
+                                                           THEN 'LOW STOCK - NO SUPPLY'
 
         -- Low DOS, no reserve, but inbound coming
         WHEN COALESCE(S4.DAILY_SHIPPED_4W, 0) > 0
          AND COALESCE(INV.TOTAL_BOH, 0) / S4.DAILY_SHIPPED_4W < 3
          AND COALESCE(INV.RESERVE_BOH, 0) = 0
          AND COALESCE(BYF.INCOMING_14D, 0) > 0
-                                                           THEN 'LOW DOS - INBOUND EXPECTED'
+                                                           THEN 'LOW STOCK - INBOUND EXPECTED'
 
         -- Pick slot less than 1 shift, but has reserve
         WHEN COALESCE(S4.DAILY_SHIPPED_4W, 0) > 0
