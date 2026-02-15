@@ -373,12 +373,14 @@ SELECT
 
     -- ===================== DOS (shipped basis) =====================
     CASE
+        WHEN COALESCE(INV.TOTAL_BOH, 0) = 0               THEN 0
         WHEN COALESCE(S4.DAILY_SHIPPED_4W, 0) = 0         THEN 9999
         ELSE ROUND(COALESCE(INV.TOTAL_BOH, 0) / S4.DAILY_SHIPPED_4W, 1)
     END                                                    AS DAYS_OF_SUPPLY,
 
     -- ===================== HOS (24hr, pick slot only) =====================
     CASE
+        WHEN COALESCE(INV.PRIMARY_BOH, 0) = 0             THEN 0
         WHEN COALESCE(S4.DAILY_SHIPPED_4W, 0) = 0         THEN 9999
         ELSE ROUND(
             (COALESCE(INV.PRIMARY_BOH, 0) * COALESCE(D.CSE_UNIT, 1))
