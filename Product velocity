@@ -170,7 +170,9 @@ BY_FORECAST AS (
         END                                                  AS DC_ID,
         CAST(RIGHT(WHSE_FACLTY_ID, 1) AS INTEGER)           AS WHSE_ID,
         SKU_NBR,
-        SUM(CASES_QTY)                                       AS INCOMING_14D
+        SUM(CASES_QTY)                                       AS INCOMING_14D,
+        MIN(PICK_DT)                                         AS EARLIEST_INBOUND_DT,
+        MAX(PICK_DT)                                         AS LATEST_INBOUND_DT
     FROM CORE_FSSC.CURATED_FORECAST.JDA_DC_OB_PRIOR_SKU
     WHERE PICK_DT BETWEEN DATEADD(DAY, 1, CURRENT_DATE())
                       AND DATEADD(DAY, 14, CURRENT_DATE())
@@ -301,7 +303,23 @@ SELECT
 
     -- ===================== FORWARD LOOKING =====================
     COALESCE(BYF.INCOMING_14D, 0)                          AS INCOMING_14D,
+    BYF.EARLIEST_INBOUND_DT,
+    BYF.LATEST_INBOUND_DT,
     COALESCE(FO.FUTURE_ORDERS_5D, 0)                       AS FUTURE_ORDERS_5D,
+
+    -- ===================== FULFILLMENT (next 5 days) =====================
+    CASE
+        WHEN COALESCE(FO.FUTURE_ORDERS_5D, 0) = 0             THEN 'NO ORDERS'
+        WHEN COALESCE(INV.TOTAL_BOH, 0) >= COALESCE(FO.FUTURE_ORDERS_5D, 0)
+                                                               THEN 'CAN FULFILL'
+        ELSE 'SHORT SHIP RISK'
+    END                                                    AS FULFILLMENT_FLAG,
+
+    CASE
+        WHEN COALESCE(FO.FUTURE_ORDERS_5D, 0) > COALESCE(INV.TOTAL_BOH, 0)
+        THEN COALESCE(FO.FUTURE_ORDERS_5D, 0) - COALESCE(INV.TOTAL_BOH, 0)
+        ELSE 0
+    END                                                    AS AT_RISK_QTY,
 
     -- ===================== DOS (shipped basis) =====================
     CASE
